@@ -1,0 +1,78 @@
+{
+  // The bridge always monitors both Codex Desktop and Codex CLI.
+  // Desktop approvals can be acted on from Discord.
+  // Bridge-managed Windows CLI approvals can be acted on from Discord.
+
+  // Behavior preset:
+  // - "basic": mirror conversation, grouped command/file activity, and approval responses
+  // - "recommended": basic + Discord message write-back (`/codex send`, queue/retract, steering)
+  // - "full": recommended + ungrouped command/file activity and detail buttons
+  // Preset defaults live in config/presets/*.json. Sections below override the selected preset.
+  // "preset": "full",
+  "preset": "recommended",
+
+  // Discord actions that respond to Codex requests.
+  "approvals": {
+    // Enables approve/reject buttons for Codex approval requests and proposed-plan accept/feedback buttons.
+    "allowFromDiscord": true,
+    // Advanced-only: how long Discord approval cards stay actionable before expiring.
+    // "approvalTtlMinutes": 30,
+    "mentionApprovers": true
+  },
+
+  // Explicit Discord-to-Codex messages that are not direct responses to a Codex request.
+  // Covers `/codex send` starting a new turn, queueing while busy, "Steer instead",
+  // `/codex send mode:steer`, and queued-message retraction.
+  "messageWriteBacks": {
+    "allowFromDiscord": true
+  },
+
+  // Mirror surfaces. Toggle these individually if the preset is too quiet or too noisy.
+  "visibility": {
+    "userMessages": true,
+    "thinkingMessages": false,
+    "finalMessages": true,
+    "commands": true,
+    "fileEdits": false
+  },
+
+  // Startup backfill only applies to brand-new Discord channels.
+  "startupBackfill": {
+    "maxCodexMessages": 20
+    // Advanced-only: keep some context from both the start and end of a long startup-backfilled turn.
+    // When omitted, the bridge splits maxCodexMessages across both sides automatically.
+    // If you enable either budget below, add a comma after maxCodexMessages above.
+    // "leadingEventBudget": 10,
+    // "trailingEventBudget": 10
+  },
+
+  // Keep only the latest N turns mirrored in each Discord channel.
+  "retention": {
+    "maxTurnsPerThread": 2
+  },
+
+  // UI and retention controls.
+  "ui": {
+    // Command display mode:
+    // - "summary" (default): mirror command/file activity as "Ran X commands, edited Y files"
+    // - "full": mirror per-command previews and file-edit entries
+    "commandDisplayMode": "summary",
+    // Used when commandDisplayMode is "full".
+    "commandPreviewMaxLength": 110,
+    // Used when commandDisplayMode is "full".
+    "enableCommandDetails": true,
+    "detailButtonTtlMinutes": 60,
+    // Dev-only: when true, show debug "Dev" detail buttons with raw mirror payload snapshots.
+    "showDevDetailButtons": false
+  },
+
+  // Dev-only local mirror trace file. Use this to debug ordering/replay issues from terminal
+  // without opening Discord. Keep disabled for normal use.
+  "diagnostics": {
+    // Dev-only: when true or 1, dump oversized Desktop steer payloads to tmp/desktop-steer-dumps.
+    "desktopSteerDumpEnabled": false,
+    "mirrorTraceEnabled": false,
+    "mirrorTracePath": "./tmp/bridge-mirror-trace.jsonl",
+    "mirrorTraceMaxBytes": 5242880
+  }
+}

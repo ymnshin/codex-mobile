@@ -1,0 +1,641 @@
+{
+  "version": 1,
+  "defaults": {
+    "timeoutSeconds": 45,
+    "inspectLimit": 30,
+    "safety": "isolated",
+    "requiredCapabilities": [
+      "codex-live-thread",
+      "discord-bot",
+      "bridge-config"
+    ]
+  },
+  "groups": [
+    {
+      "id": "autonomous-basic",
+      "title": "No-user-input local-store smoke coverage for live mirroring.",
+      "description": "Use this first. It verifies Codex -> bridge -> SQLite without Discord API inspection.",
+      "humanInput": {
+        "summary": "No follow-up human input required after the initial request.",
+        "required": [
+          "Initial request to run this group. For user-message scenarios, Codex should use a distinctive substring from that request as the marker."
+        ],
+        "approvals": [
+          "No Discord or network approval. Codex may still need local process approval to start the local-store bridge because it spawns `codex app-server`. Approve `npm run e2e-live -- start-local-current` for the session to avoid one start prompt per scenario."
+        ],
+        "notRequired": [
+          "No second user message.",
+          "No Discord API inspection.",
+          "No browser or Discord UI inspection.",
+          "No manual channel ID."
+        ]
+      },
+      "scenarios": [
+        "basic-message.user-on",
+        "basic-message.user-off",
+        "basic-message.commentary-on",
+        "basic-message.commentary-off",
+        "commands.summary",
+        "file-edits.summary-with-command"
+      ]
+    },
+    {
+      "id": "autonomous-visibility",
+      "title": "No-user-input local-store coverage for the current visibility matrix.",
+      "description": "Covers commentary, subagent final answers, command modes, and file edit modes without manual follow-up messages or Discord inspection.",
+      "humanInput": {
+        "summary": "No follow-up human input required after the initial request.",
+        "required": [
+          "Initial request to run this group. For user-message scenarios, Codex should use a distinctive substring from that request as the marker."
+        ],
+        "approvals": [
+          "No Discord or network approval. Codex may still need local process approval to start the local-store bridge because it spawns `codex app-server`. Approve `npm run e2e-live -- start-local-current` for the session to avoid one start prompt per scenario. Subagent scenarios may also need normal Codex subagent/tool approval depending on sandbox policy."
+        ],
+        "notRequired": [
+          "No second user message.",
+          "No Discord API inspection.",
+          "No browser or Discord UI inspection.",
+          "No manual channel ID."
+        ]
+      },
+      "scenarios": [
+        "basic-message.user-on",
+        "basic-message.user-off",
+        "basic-message.commentary-on",
+        "basic-message.commentary-off",
+        "basic-message.final-on",
+        "basic-message.final-off",
+        "commands.off",
+        "commands.summary",
+        "commands.full",
+        "commands.full-details",
+        "file-edits.off",
+        "file-edits.full",
+        "file-edits.summary-with-command"
+      ]
+    },
+    {
+      "id": "discord-basic",
+      "title": "Full-stack Discord smoke coverage for selected live mirroring paths.",
+      "description": "Runs mechanically triggered command and file-edit actions, then verifies Discord-rendered output through the Discord API. Commentary scenarios are explicit single-scenario checks because the runner must emit an exact commentary marker.",
+      "humanInput": {
+        "summary": "No follow-up test messages required, but Discord/network approval may be required.",
+        "required": [
+          "Initial request to run this group.",
+          "Working root `.env` and `bridge.config.json` with Discord credentials and IDs.",
+          "`prepare --surface discord` must resolve and print a scoped Codex thread ID; if it cannot, provide `--thread-id <codex-thread-id>` rather than running unscoped."
+        ],
+        "approvals": [
+          "Approval to start the real Discord bridge if Codex sandbox policy asks. Approve `npm run e2e-live -- start-current` for the session to avoid one start prompt per scenario.",
+          "Approval for Discord API and local Node inspect verification if Codex sandbox policy asks.",
+          "Approval to stop the run-scoped bridge process if Codex sandbox policy asks.",
+          "Approval for mapped-only Discord cleanup if Codex sandbox policy asks."
+        ],
+        "notRequired": [
+          "No second user message.",
+          "No browser or Discord UI inspection.",
+          "No manual channel ID unless scoped auto-selection fails."
+        ]
+      },
+      "scenarios": [
+        "commands.summary",
+        "file-edits.summary-with-command"
+      ]
+    },
+    {
+      "id": "approval-requests",
+      "title": "Full-stack Discord coverage for approval and response-control mirroring.",
+      "description": "Verifies that real subagent approval requests and proposed-plan response controls are detected, stored, and rendered in Discord without clicking them.",
+      "humanInput": {
+        "summary": "No approval decision is required, but Discord/network approval may be required.",
+        "required": [
+          "Initial request to run this group.",
+          "Working root `.env` and `bridge.config.json` with Discord credentials and IDs.",
+          "`prepare` uses the Discord surface by default and must resolve and print a scoped Codex thread ID; if it cannot, provide `--thread-id <codex-thread-id>` rather than running unscoped."
+        ],
+        "approvals": [
+          "Approval to start the real Discord bridge if Codex sandbox policy asks. Approve `npm run e2e-live -- start-current` for the session.",
+          "Approval for Discord API and local Node inspect verification if Codex sandbox policy asks.",
+          "The spawned subagent will request a Codex approval for a harmless marker command. Do not approve or reject it; the test only verifies that the request is mirrored.",
+          "The proposed-plan scenario does not require accepting the plan or sending plan feedback; it only verifies that the response controls are rendered.",
+          "Approval to close the subagent may be needed depending on the Codex environment, especially if it is still blocked on the request.",
+          "Approval for mapped-only Discord cleanup if Codex sandbox policy asks."
+        ],
+        "notRequired": [
+          "No approval button click.",
+          "No second user message.",
+          "No browser or Discord UI inspection.",
+          "No manual channel ID unless scoped auto-selection fails."
+        ]
+      },
+      "scenarios": [
+        "approvals.command-request",
+        "approvals.proposed-plan-card"
+      ]
+    }
+  ],
+  "baseConfig": {
+    "preset": "recommended",
+    "visibility": {
+      "userMessages": false,
+      "thinkingMessages": false,
+      "finalMessages": false,
+      "commands": false,
+      "fileEdits": false
+    },
+    "startupBackfill": {
+      "maxCodexMessages": 0
+    },
+    "retention": {
+      "maxTurnsPerThread": 2
+    },
+    "ui": {
+      "commandDisplayMode": "summary",
+      "commandPreviewMaxLength": 110,
+      "enableCommandDetails": false,
+      "detailButtonTtlMinutes": 60,
+      "showDevDetailButtons": false
+    },
+    "diagnostics": {
+      "desktopSteerDumpEnabled": false,
+      "mirrorTraceEnabled": false,
+      "mirrorTracePath": "./bridge-mirror-trace.jsonl",
+      "mirrorTraceMaxBytes": 5242880
+    }
+  },
+  "tests": [
+    {
+      "id": "basic-message",
+      "playbook": "basic-message.md",
+      "scenarios": [
+        {
+          "id": "basic-message.user-on",
+          "title": "User message marker is mirrored when user messages are enabled.",
+          "safety": "isolated",
+          "timeoutSeconds": 45,
+          "config": {
+            "visibility": {
+              "userMessages": true
+            },
+            "startupBackfill": {
+              "maxCodexMessages": 20
+            }
+          },
+          "action": {
+            "type": "initial-user-message",
+            "description": "Use an exact distinctive substring from the user's initial test-start request as `${marker}`. Start the bridge after prepare; startup backfill should import that initial user message.",
+            "steps": [
+              "Prepare with `--marker <exact-substring-from-the-initial-user-request>`.",
+              "Start the bridge after prepare.",
+              "Wait 10 seconds before verification."
+            ]
+          },
+          "expect": {
+            "discordContains": [
+              "${marker}"
+            ],
+            "discordNotContains": []
+          }
+        },
+        {
+          "id": "basic-message.user-off",
+          "title": "User message marker is suppressed when user messages are disabled.",
+          "safety": "isolated",
+          "timeoutSeconds": 30,
+          "config": {
+            "visibility": {
+              "userMessages": false
+            },
+            "startupBackfill": {
+              "maxCodexMessages": 20
+            }
+          },
+          "action": {
+            "type": "initial-user-message",
+            "description": "Use an exact distinctive substring from the user's initial test-start request as `${marker}`. Start the bridge after prepare; startup backfill should see the same initial user message but suppress it.",
+            "steps": [
+              "Prepare with `--marker <exact-substring-from-the-initial-user-request>`.",
+              "Start the bridge after prepare.",
+              "Wait the full verification timeout so late mirrors can be caught."
+            ]
+          },
+          "expect": {
+            "absenceOnly": true,
+            "discordContains": [],
+            "discordNotContains": [
+              "${marker}"
+            ]
+          }
+        },
+        {
+          "id": "basic-message.commentary-on",
+          "title": "Commentary marker is mirrored when thinking messages are enabled.",
+          "safety": "isolated",
+          "timeoutSeconds": 45,
+          "config": {
+            "visibility": {
+              "thinkingMessages": true
+            }
+          },
+          "action": {
+            "type": "assistant-commentary",
+            "description": "Send one Codex commentary update containing exactly `${marker}` after the bridge is running.",
+            "steps": [
+              "Emit `${marker}` in a commentary update.",
+              "Wait 10 seconds before verification."
+            ]
+          },
+          "expect": {
+            "discordContains": [
+              "${marker}"
+            ],
+            "discordNotContains": []
+          }
+        },
+        {
+          "id": "basic-message.commentary-off",
+          "title": "Commentary marker is suppressed when thinking messages are disabled.",
+          "safety": "isolated",
+          "timeoutSeconds": 30,
+          "config": {
+            "visibility": {
+              "thinkingMessages": false
+            }
+          },
+          "action": {
+            "type": "assistant-commentary",
+            "description": "Send one Codex commentary update containing exactly `${marker}` after the bridge is running.",
+            "steps": [
+              "Emit `${marker}` in a commentary update.",
+              "Wait the full verification timeout so late mirrors can be caught."
+            ]
+          },
+          "expect": {
+            "absenceOnly": true,
+            "discordContains": [],
+            "discordNotContains": [
+              "${marker}"
+            ]
+          }
+        },
+        {
+          "id": "basic-message.final-on",
+          "title": "Subagent final marker is mirrored when final messages are enabled.",
+          "safety": "isolated",
+          "timeoutSeconds": 60,
+          "config": {
+            "visibility": {
+              "finalMessages": true
+            }
+          },
+          "action": {
+            "type": "subagent-final",
+            "description": "Spawn one harmless subagent and instruct it to reply with exactly `${marker}` as its final answer.",
+            "steps": [
+              "Spawn one subagent with the final-answer instruction.",
+              "Run `npm run e2e-live -- verify basic-message.final-on --run-id <run-id>`; verify auto-selects the latest child thread from the temp store.",
+              "If auto-selection fails, use `npm run e2e-live -- inspect-discord <run-id>` and pass the child thread with `--channel`."
+            ]
+          },
+          "expect": {
+            "discordContains": [
+              "${marker}"
+            ],
+            "discordNotContains": []
+          }
+        },
+        {
+          "id": "basic-message.final-off",
+          "title": "Subagent final marker is suppressed when final messages are disabled.",
+          "safety": "isolated",
+          "timeoutSeconds": 45,
+          "config": {
+            "visibility": {
+              "finalMessages": false
+            }
+          },
+          "action": {
+            "type": "subagent-final",
+            "description": "Spawn one harmless subagent and instruct it to reply with exactly `${marker}` as its final answer.",
+            "steps": [
+              "Spawn one subagent with the final-answer instruction.",
+              "Run `npm run e2e-live -- verify basic-message.final-off --run-id <run-id>`; verify auto-selects the latest child thread from the temp store.",
+              "If auto-selection fails, use `npm run e2e-live -- inspect-discord <run-id>` and pass the child thread with `--channel`."
+            ]
+          },
+          "expect": {
+            "absenceOnly": true,
+            "discordContains": [],
+            "discordNotContains": [
+              "${marker}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "command-visibility",
+      "playbook": "command-visibility.md",
+      "scenarios": [
+        {
+          "id": "commands.off",
+          "title": "Command markers are suppressed when command visibility is disabled.",
+          "safety": "isolated",
+          "timeoutSeconds": 30,
+          "config": {
+            "visibility": {
+              "commands": false
+            }
+          },
+          "action": {
+            "type": "two-shell-commands",
+            "description": "Run two separate Codex shell tool calls whose PowerShell command text includes `${marker}`.",
+            "steps": [
+              "Run one shell tool call with `Write-Output \"${marker} command-one\"`.",
+              "Run a second shell tool call with `Write-Output \"${marker} command-two\"`.",
+              "Wait the full verification timeout so late mirrors can be caught."
+            ]
+          },
+          "expect": {
+            "absenceOnly": true,
+            "discordContains": [],
+            "discordNotContains": [
+              "${marker}",
+              "Ran 2 commands"
+            ]
+          }
+        },
+        {
+          "id": "commands.summary",
+          "title": "Command activity is summarized when commands are enabled in summary mode.",
+          "safety": "isolated",
+          "timeoutSeconds": 45,
+          "config": {
+            "visibility": {
+              "commands": true
+            },
+            "ui": {
+              "commandDisplayMode": "summary",
+              "enableCommandDetails": false
+            }
+          },
+          "action": {
+            "type": "two-shell-commands",
+            "description": "Run two separate Codex shell tool calls whose PowerShell command text includes `${marker}`.",
+            "steps": [
+              "Run one shell tool call with `Write-Output \"${marker} command-one\"`.",
+              "Run a second shell tool call with `Write-Output \"${marker} command-two\"`.",
+              "Wait 10 seconds before verification."
+            ]
+          },
+          "expect": {
+            "discordContains": [
+              "Ran 2 commands"
+            ],
+            "discordNotContains": [
+              "${marker}",
+              "Cmd 1"
+            ]
+          }
+        },
+        {
+          "id": "commands.full",
+          "title": "Command previews are mirrored in full mode without detail buttons.",
+          "safety": "isolated",
+          "timeoutSeconds": 45,
+          "config": {
+            "visibility": {
+              "commands": true
+            },
+            "ui": {
+              "commandDisplayMode": "full",
+              "commandPreviewMaxLength": 140,
+              "enableCommandDetails": false
+            }
+          },
+          "action": {
+            "type": "two-shell-commands",
+            "description": "Run two separate Codex shell tool calls whose PowerShell command text includes `${marker}`.",
+            "steps": [
+              "Run one shell tool call with `Write-Output \"${marker} command-one\"`.",
+              "Run a second shell tool call with `Write-Output \"${marker} command-two\"`.",
+              "Wait 10 seconds before verification."
+            ]
+          },
+          "expect": {
+            "discordContains": [
+              "${marker}",
+              "Write-Output"
+            ],
+            "discordNotContains": [
+              "Ran 2 commands",
+              "Cmd 1"
+            ]
+          }
+        },
+        {
+          "id": "commands.full-details",
+          "title": "Long command previews expose command detail buttons in full mode.",
+          "safety": "isolated",
+          "timeoutSeconds": 45,
+          "config": {
+            "visibility": {
+              "commands": true
+            },
+            "ui": {
+              "commandDisplayMode": "full",
+              "commandPreviewMaxLength": 40,
+              "enableCommandDetails": true
+            }
+          },
+          "action": {
+            "type": "two-long-shell-commands",
+            "description": "Run two separate Codex shell tool calls whose long PowerShell command text starts with `${marker}`.",
+            "steps": [
+              "Run one shell tool call with `Write-Output \"${marker} command-one with enough trailing text to force truncation\"`.",
+              "Run a second shell tool call with `Write-Output \"${marker} command-two with enough trailing text to force truncation\"`.",
+              "Wait 10 seconds before verification."
+            ]
+          },
+          "expect": {
+            "discordContains": [
+              "Write-Output",
+              "Cmd 1"
+            ],
+            "discordNotContains": [
+              "Ran 2 commands"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "file-edit-visibility",
+      "playbook": "file-edit-visibility.md",
+      "scenarios": [
+        {
+          "id": "file-edits.off",
+          "title": "File edit markers are suppressed when file edit visibility is disabled.",
+          "safety": "isolated",
+          "timeoutSeconds": 30,
+          "config": {
+            "visibility": {
+              "fileEdits": false
+            }
+          },
+          "action": {
+            "type": "ignored-temp-file-edit",
+            "description": "Edit `tmp/live-e2e/${runId}/file-edit-${marker}.txt` using the marker as file content.",
+            "steps": [
+              "Create or update the ignored temp file with `${marker}` in its path and content.",
+              "Wait the full verification timeout so late mirrors can be caught."
+            ]
+          },
+          "expect": {
+            "absenceOnly": true,
+            "discordContains": [],
+            "discordNotContains": [
+              "${marker}",
+              "file-edit"
+            ]
+          }
+        },
+        {
+          "id": "file-edits.full",
+          "title": "File edit markers are mirrored when file edits are enabled and commands are disabled.",
+          "safety": "isolated",
+          "timeoutSeconds": 45,
+          "config": {
+            "visibility": {
+              "fileEdits": true,
+              "commands": false
+            }
+          },
+          "action": {
+            "type": "ignored-temp-file-edit",
+            "description": "Edit `tmp/live-e2e/${runId}/file-edit-${marker}.txt` using the marker as file content.",
+            "steps": [
+              "Create or update the ignored temp file with `${marker}` in its path and content.",
+              "Wait 10 seconds before verification."
+            ]
+          },
+          "expect": {
+            "discordContains": [
+              "${marker}",
+              "file-edit"
+            ],
+            "discordNotContains": [
+              "Ran 1 command"
+            ]
+          }
+        },
+        {
+          "id": "file-edits.summary-with-command",
+          "title": "File edit and command activity are folded into one activity summary.",
+          "safety": "isolated",
+          "timeoutSeconds": 45,
+          "config": {
+            "visibility": {
+              "fileEdits": true,
+              "commands": true
+            },
+            "ui": {
+              "commandDisplayMode": "summary"
+            }
+          },
+          "action": {
+            "type": "ignored-temp-file-edit-and-command",
+            "description": "Edit `tmp/live-e2e/${runId}/file-edit-${marker}.txt`, then run one harmless marker command.",
+            "steps": [
+              "Create or update the ignored temp file with `${marker}` in its path and content.",
+              "Run `Write-Output \"${marker} file-edit-command\"`.",
+              "Wait 10 seconds before verification."
+            ]
+          },
+          "expect": {
+            "discordContains": [
+              "Created 1 file, ran 1 command"
+            ],
+            "discordNotContains": [
+              "${marker}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "approval-requests",
+      "playbook": "approval-requests.md",
+      "scenarios": [
+        {
+          "id": "approvals.command-request",
+          "title": "Subagent command approval request is mirrored to Discord.",
+          "safety": "isolated",
+          "timeoutSeconds": 60,
+          "defaultSurface": "discord",
+          "action": {
+            "type": "subagent-approval-request",
+            "description": "Spawn one subagent and instruct it to request approval for a harmless escalated PowerShell command containing `${marker}`. Do not approve or reject the request.",
+            "steps": [
+              "Spawn one subagent with the approval-request instruction from `approval-requests.md`.",
+              "Do not call `wait_agent`; the subagent is expected to block on the approval request.",
+              "Run `npm run e2e-live -- verify approvals.command-request --run-id <run-id>`; verify auto-selects the latest child thread from the temp store.",
+              "Close the spawned subagent after verification, whether the scenario passes or fails."
+            ]
+          },
+          "expect": {
+            "discordContains": [
+              "${marker}",
+              "Type: Command execution",
+              "Preview:"
+            ],
+            "discordNotContains": [],
+            "storeContains": [
+              "${marker}",
+              "approval commandExecution"
+            ],
+            "storeNotContains": []
+          }
+        },
+        {
+          "id": "approvals.proposed-plan-card",
+          "title": "Subagent proposed plan is mirrored with Discord response controls.",
+          "safety": "isolated",
+          "timeoutSeconds": 60,
+          "defaultSurface": "discord",
+          "config": {
+            "approvals": {
+              "allowFromDiscord": true
+            },
+            "visibility": {
+              "finalMessages": true
+            }
+          },
+          "action": {
+            "type": "subagent-proposed-plan",
+            "description": "Spawn one subagent and instruct it to reply with a final answer containing a `<proposed_plan>` block with `${marker}`. Do not accept the plan or send feedback.",
+            "steps": [
+              "Spawn one subagent with the proposed-plan instruction from `approval-requests.md`.",
+              "Wait for the subagent to finish its final answer if needed.",
+              "Run `npm run e2e-live -- verify approvals.proposed-plan-card --run-id <run-id>`; verify auto-selects the latest child thread from the temp store.",
+              "Do not click the plan buttons. Close the spawned subagent after verification if it is still open."
+            ]
+          },
+          "expect": {
+            "discordContains": [
+              "${marker}",
+              "Accept plan",
+              "No, and tell Codex what to do differently"
+            ],
+            "discordNotContains": [],
+            "storeContains": [
+              "${marker}",
+              "proposed-plan status=pending"
+            ],
+            "storeNotContains": []
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "messageWriteBacks": {
+    "allowFromDiscord": true
+  },
+  "visibility": {
+    "userMessages": true,
+    "thinkingMessages": true,
+    "finalMessages": true,
+    "commands": true,
+    "fileEdits": true
+  },
+  "startupBackfill": {
+    "maxCodexMessages": 20,
+    "leadingEventBudget": 10,
+    "trailingEventBudget": 10
+  },
+  "retention": {
+    "maxTurnsPerThread": 2
+  },
+  "ui": {
+    "commandDisplayMode": "summary",
+    "commandPreviewMaxLength": 110,
+    "enableCommandDetails": false,
+    "detailButtonTtlMinutes": 60,
+    "showDevDetailButtons": false
+  },
+  "diagnostics": {
+    "desktopSteerDumpEnabled": false,
+    "mirrorTraceEnabled": false,
+    "mirrorTracePath": "./tmp/bridge-mirror-trace.jsonl",
+    "mirrorTraceMaxBytes": 5242880
+  },
+  "discovery": {
+    "allowedThreadIds": [],
+    "projectNamePrefix": null
+  }
+}

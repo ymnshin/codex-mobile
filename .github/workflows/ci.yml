@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  # Paused to avoid spending GitHub Actions credits.
+  # Re-add push/pull_request triggers when CI should run automatically again.
+  workflow_dispatch:
+
+jobs:
+  test-windows:
+    runs-on: windows-latest
+    env:
+      npm_config_script_shell: C:\Windows\System32\cmd.exe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Check
+        run: npm run check
+
+      - name: Coverage gate
+        run: npm run coverage:gate
+
+  test-macos:
+    runs-on: macos-latest
+    env:
+      npm_config_script_shell: /bin/bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Check
+        run: npm run check
+
+      - name: Test
+        run: npm test

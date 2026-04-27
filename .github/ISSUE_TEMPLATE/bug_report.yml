@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a reproducible problem in codex-mobile.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please redact secrets, tokens, `.env` values, and sensitive local paths before posting logs.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0-beta or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Setup / init / doctor
+        - Discord UX
+        - Approvals
+        - Mirroring
+        - Desktop IPC
+        - Security / redaction
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: Tell us exactly what happened.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Redact secrets and private local information before posting.
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Does this break approvals, mirroring, setup, or something else?

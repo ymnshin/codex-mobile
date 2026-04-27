@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest an improvement for codex-mobile.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      placeholder: What is painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      placeholder: What should the bridge do instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Security / privacy
+        - Discord UX
+        - Approvals
+        - Provider architecture
+        - Setup / onboarding
+        - Diagnostics
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Tradeoffs or risks
+      description: Especially note any security or trust-model impact.

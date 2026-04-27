@@ -1,0 +1,46 @@
+{
+  "name": "codex-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first Codex to Discord bridge for monitoring conversations and approving actions from mobile.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node scripts/npm-run.cjs build",
+    "check": "node scripts/npm-run.cjs check",
+    "dev": "node scripts/npm-run.cjs dev",
+    "e2e-live": "node scripts/npm-run.cjs e2e-live",
+    "doctor": "node scripts/npm-run.cjs doctor",
+    "init": "node scripts/npm-run.cjs init",
+    "clean": "node scripts/npm-run.cjs clean",
+    "coverage": "node scripts/npm-run.cjs coverage",
+    "coverage:gate": "node scripts/npm-run.cjs coverage gate",
+    "approvals": "node scripts/npm-run.cjs approvals",
+    "approve": "node scripts/npm-run.cjs approve",
+    "inspect": "node scripts/npm-run.cjs inspect",
+    "inspect:discord": "node scripts/npm-run.cjs inspect discord",
+    "inspect:discord-thread": "node scripts/npm-run.cjs inspect discord-thread",
+    "inspect:codex": "node scripts/npm-run.cjs inspect codex",
+    "inspect:store": "node scripts/npm-run.cjs inspect store",
+    "inspect:desktop": "node scripts/npm-run.cjs inspect desktop",
+    "inspect:trace": "node scripts/npm-run.cjs inspect trace",
+    "inspect:thread": "node scripts/npm-run.cjs inspect thread",
+    "cli": "node scripts/npm-run.cjs cli",
+    "start": "node scripts/npm-run.cjs start",
+    "test": "node scripts/npm-run.cjs test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.5.0",
+    "pino": "^9.7.0",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.9.3"
+  }
+}
