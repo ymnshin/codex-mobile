@@ -10,7 +10,6 @@ import { DiscordProvider } from "../src/providers/discord/DiscordProvider.js";
 import { createBridgeTestRig, createBridgeService, FakeDesktopIpcClient, FakeDiscordAdapter, FakeCodexAdapter,
   testApprovalsConfig } from "./helpers/bridgeIntegration.js";
 
-// Synthetic snowflakes, not live Discord resources.
 const CHANNEL = "1111111111111111111";
 const MESSAGE = "2222222222222222222";
 const MESSAGE2 = "2222222222222222223";

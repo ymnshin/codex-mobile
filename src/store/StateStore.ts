@@ -233,6 +233,12 @@ export class StateStore {
       );
     `);
 
+    const queueColumns = this.database.pragma("table_info(write_back_queue)") as Array<{ name: string }>;
+    for (const column of ["lease_expires_at", "dispatch_started_at"]) {
+      if (!queueColumns.some((entry) => entry.name === column)) {
+        this.database.exec(`ALTER TABLE write_back_queue ADD COLUMN ${column} TEXT`);
+      }
+    }
     const inputColumns = this.database.pragma("table_info(discord_message_inputs)") as Array<{ name: string }>;
     if (!inputColumns.some((column) => column.name === "thinking_reaction_state")) {
       this.database.exec("ALTER TABLE discord_message_inputs ADD COLUMN thinking_reaction_state TEXT");
@@ -280,6 +286,11 @@ export class StateStore {
 
   setBridgeMetaValue(key: string, value: string): void {
     this.setSchemaMetaValue(key, value);
+  }
+
+  getBridgeMetaValue(key: string): string | null {
+    const row = this.database.prepare("SELECT value FROM schema_meta WHERE key = ?").get(key) as { value: string } | undefined;
+    return row?.value ?? null;
   }
 
   upsertProjectBridge(record: ProjectBridgeRecord): void {
@@ -1298,6 +1309,7 @@ export class StateStore {
 
   claimNextPendingWriteBackQueueItem(threadId: string): WriteBackQueueRecord | null {
     const claim = this.database.transaction(() => {
+      if (this.database.prepare("SELECT 1 FROM write_back_queue WHERE codex_thread_id = ? AND status IN ('sending', 'uncertain') LIMIT 1").get(threadId)) return null;
       const row = this.database
         .prepare(`
           SELECT * FROM write_back_queue
@@ -1316,10 +1328,10 @@ export class StateStore {
           UPDATE write_back_queue
           SET status = 'sending',
               updated_at = ?,
-              error = NULL
+              error = NULL, lease_expires_at = ?, dispatch_started_at = NULL
           WHERE id = ? AND status = 'pending'
         `)
-        .run(now, id);
+        .run(now, new Date(Date.now() + 120_000).toISOString(), id);
       if (Number(result.changes ?? 0) === 0) {
         return null;
       }
@@ -1336,10 +1348,10 @@ export class StateStore {
           UPDATE write_back_queue
           SET status = 'sending',
               updated_at = ?,
-              error = NULL
+              error = NULL, lease_expires_at = ?, dispatch_started_at = NULL
           WHERE id = ? AND status = 'pending'
         `)
-        .run(now, id);
+        .run(now, new Date(Date.now() + 120_000).toISOString(), id);
       if (Number(result.changes ?? 0) === 0) {
         return null;
       }
@@ -1360,6 +1372,35 @@ export class StateStore {
         WHERE id = ?
       `)
       .run(now, now, id);
+  }
+
+  markWriteBackDispatchStarted(id: number): void {
+    this.database.prepare("UPDATE write_back_queue SET dispatch_started_at = ? WHERE id = ? AND status = 'sending'")
+      .run(new Date().toISOString(), id);
+  }
+
+  markWriteBackQueueItemUncertain(id: number): void {
+    this.database.prepare("UPDATE write_back_queue SET status = 'uncertain', error = 'uncertain', updated_at = ? WHERE id = ? AND status = 'sending'")
+      .run(new Date().toISOString(), id);
+  }
+
+  /** A missing phase on legacy sending rows is ambiguous, never safe to retry. */
+  recoverExpiredWriteBackClaims(threadId: string, now = Date.now()): void {
+    this.database.prepare(`UPDATE write_back_queue SET
+      status = CASE WHEN dispatch_started_at IS NULL AND lease_expires_at IS NOT NULL THEN 'pending' ELSE 'uncertain' END,
+      error = CASE WHEN dispatch_started_at IS NULL AND lease_expires_at IS NOT NULL THEN NULL ELSE 'uncertain' END,
+      updated_at = ?
+      WHERE codex_thread_id = ? AND status = 'sending' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`)
+      .run(new Date(now).toISOString(), threadId, new Date(now).toISOString());
+  }
+
+  retractUncertainWriteBackQueueItem(threadId: string): WriteBackQueueRecord | null {
+    const row = this.database.prepare("SELECT id FROM write_back_queue WHERE codex_thread_id = ? AND status = 'uncertain' ORDER BY id LIMIT 1")
+      .get(threadId) as { id: number } | undefined;
+    if (!row) return null;
+    this.database.prepare("UPDATE write_back_queue SET status = 'retracted', updated_at = ? WHERE id = ? AND status = 'uncertain'")
+      .run(new Date().toISOString(), row.id);
+    return this.getWriteBackQueueItem(row.id) ?? null;
   }
 
   markWriteBackQueueItemFailed(id: number, error: string): void {
@@ -1997,6 +2038,7 @@ export class StateStore {
       status:
         status === "pending" ||
         status === "sending" ||
+        status === "uncertain" ||
         status === "sent" ||
         status === "failed" ||
         status === "retracted"

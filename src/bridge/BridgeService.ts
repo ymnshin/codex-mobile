@@ -114,6 +114,8 @@ export class BridgeService {
   private readonly coordinators: BridgeCoordinatorGraph;
   private sessionPollTimer: NodeJS.Timeout | null = null;
   private sessionPollPromise: Promise<void> | null = null;
+  private queueWatchdogTimer: NodeJS.Timeout | null = null;
+  private queueWatchdogPromise: Promise<void> | null = null;
 
   constructor(options: BridgeServiceOptions) {
     this.options = {
@@ -156,7 +158,8 @@ export class BridgeService {
       void this.handleServerRequest(request);
     });
     this.options.codexAdapter.on("exited", () => {
-      this.stopPolling();
+      // The queue watchdog stays alive and reconnects via the read-only health gate.
+      this.options.logger.warn({ category: "connection" }, "App-server disconnected; queued input remains durable.");
     });
     this.options.desktopIpcClient?.on("requestUpserted", (snapshot) => {
       void this.coordinators.approvalCoordinator.handleDesktopIpcRequestUpserted(snapshot);
@@ -174,6 +177,7 @@ export class BridgeService {
     this.coordinators.mirrorStateCoordinator.printProgress(`Starting ${providerLabel}...`);
     await this.options.provider.start({
       onStatusCommand: async (actor) => this.coordinators.providerCommandCoordinator.handleStatusCommand(actor),
+      onRetryCommand: async (actor, channelId) => this.coordinators.providerCommandCoordinator.handleRetryCommand(actor, channelId),
       onSendCommand: async (actor, channelId, text, mode, sourceDiscordMessageId) =>
         this.coordinators.providerCommandCoordinator.handleSendCommand(actor, channelId, text, mode, sourceDiscordMessageId),
       onRetractCommand: async (actor, channelId) =>
@@ -240,6 +244,13 @@ export class BridgeService {
       );
     }
     this.startSessionPolling();
+    this.queueWatchdogTimer = setInterval(() => {
+      if (this.stopping || this.queueWatchdogPromise) return;
+      this.queueWatchdogPromise = this.coordinators.providerCommandCoordinator.runQueueWatchdog()
+        .catch(() => this.options.logger.warn({ category: "queue_watchdog" }, "Queue watchdog could not finish; will recheck."))
+        .finally(() => { this.queueWatchdogPromise = null; });
+    }, 10_000);
+    this.queueWatchdogTimer.unref();
     this.options.stateStore.setBridgeMetaValue(BRIDGE_STARTUP_READY_META_KEY, new Date().toISOString());
   }
 
@@ -272,6 +283,7 @@ export class BridgeService {
   }
 
   private stopPolling(): void {
+    if (this.queueWatchdogTimer) { clearInterval(this.queueWatchdogTimer); this.queueWatchdogTimer = null; }
     if (this.runtime.discoveryTimer) {
       clearInterval(this.runtime.discoveryTimer);
       this.runtime.discoveryTimer = null;
@@ -326,6 +338,7 @@ export class BridgeService {
     const pending = [
       this.runtime.discoveryCyclePromise,
       this.sessionPollPromise,
+      this.queueWatchdogPromise,
       ...this.runtime.statusUpdateChains.values(),
       ...this.runtime.messageSyncChains.values(),
       ...this.runtime.threadEventChains.values(),
@@ -727,4 +740,3 @@ export class BridgeService {
     );
   }
 }
-

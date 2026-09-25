@@ -26,6 +26,7 @@ export interface ProviderMessageOptions {
 
 export interface BridgeProviderHandlers {
   onStatusCommand(actor: ProviderActorContext): Promise<DiscordCommandResult>;
+  onRetryCommand?(actor: ProviderActorContext, channelId: string): Promise<DiscordCommandResult>;
   onSendCommand(
     actor: ProviderActorContext,
     channelId: string,

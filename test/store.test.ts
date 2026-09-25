@@ -75,10 +75,11 @@ test("write-back queue persists FIFO claims and terminal statuses", () => {
 
   assert.equal(store.countPendingWriteBackQueueItems("thr_queue"), 2);
   assert.equal(store.claimNextPendingWriteBackQueueItem("thr_queue")?.id, first.id);
+  assert.equal(store.claimNextPendingWriteBackQueueItem("thr_queue"), null, "only one in-flight claim is allowed");
+  store.markWriteBackQueueItemSent(first.id);
   assert.equal(store.claimNextPendingWriteBackQueueItem("thr_queue")?.id, second.id);
   assert.equal(store.claimNextPendingWriteBackQueueItem("thr_queue"), null);
 
-  store.markWriteBackQueueItemSent(first.id);
   store.markWriteBackQueueItemFailed(second.id, "start failed");
 
   assert.equal(store.getWriteBackQueueItem(first.id)?.status, "sent");

@@ -20,6 +20,7 @@ import "./codexAdapter.test.js";
 import "./codexDesktopIpcClient.test.js";
 import "./plainTextInput.test.js";
 import "./inputReactions.test.js";
+import "./queueRecovery.test.js";
 import "./codexCliStandaloneLauncher.test.js";
 import "./codexListenUrl.test.js";
 import "./store.test.js";

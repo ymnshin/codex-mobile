@@ -12,6 +12,7 @@ import type {
 import type { Logger } from "../logger.js";
 import { resolveCommandSpawn } from "../platform.js";
 import { CodexSessionMetadataResolver } from "./CodexSessionMetadataResolver.js";
+import { classifyCodexRejection, evaluateAvailability, WriteBackNotDispatchedError, type WriteBackAvailability } from "./WriteBackAvailability.js";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -121,9 +122,15 @@ export class CodexAdapter extends EventEmitter {
       await this.connectWebSocket(this.listenUrl);
     }
 
-    await this.initialize();
-    const account = await this.request("account/read", { refreshToken: false });
-    this.emit("account", account);
+    try { await this.initialize(); }
+    catch (error) { await this.stop(); throw error; }
+    try {
+      const account = await this.request("account/read", { refreshToken: false }, { timeoutMs: 10_000 });
+      this.emit("account", account);
+    } catch {
+      // Authentication loss must not tear down the Discord receiver/durable queue.
+      this.logger.warn({ category: "account_unavailable" }, "Codex account unavailable; write-back health gate will recheck.");
+    }
     this.emit("ready");
   }
 
@@ -133,6 +140,19 @@ export class CodexAdapter extends EventEmitter {
     this.cleanup();
     if (child && !child.killed) {
       child.kill();
+    }
+  }
+
+  async checkWriteBackAvailability(refreshToken = false): Promise<WriteBackAvailability> {
+    try {
+      await this.start();
+      const account = await this.request("account/read", { refreshToken }, { timeoutMs: 10_000 });
+      const initial = evaluateAvailability(account, null);
+      if (initial.ready || initial.reason === "auth") return initial;
+      const limits = await this.request("account/rateLimits/read", {}, { timeoutMs: 10_000 });
+      return evaluateAvailability(account, limits);
+    } catch (error) {
+      return { ready: false, reason: error instanceof WriteBackNotDispatchedError ? error.reason : "connection" };
     }
   }
 
@@ -150,7 +170,7 @@ export class CodexAdapter extends EventEmitter {
   }
 
   async readThread(threadId: string, includeTurns = false): Promise<CodexThreadDetails> {
-    const result = (await this.request("thread/read", { threadId, includeTurns })) as {
+    const result = (await this.request("thread/read", { threadId, includeTurns }, { timeoutMs: 10_000 })) as {
       thread: unknown;
     };
 
@@ -170,7 +190,7 @@ export class CodexAdapter extends EventEmitter {
           text
         }
       ]
-    });
+    }, { timeoutMs: 30_000 });
   }
 
   async steerTurn(threadId: string, expectedTurnId: string, text: string): Promise<void> {
@@ -236,7 +256,7 @@ export class CodexAdapter extends EventEmitter {
           url: {}
         }
       }
-    });
+    }, { timeoutMs: 10_000 });
 
     this.notify("initialized", {});
   }
@@ -303,6 +323,11 @@ export class CodexAdapter extends EventEmitter {
         clearTimeout(pending.timeout);
       }
       if (message.error) {
+        const reason = classifyCodexRejection(message.error);
+        if (reason) {
+          pending.reject(new WriteBackNotDispatchedError(reason));
+          return;
+        }
         const errorMessage =
           typeof message.error === "object" && message.error
             ? String((message.error as { message?: string }).message ?? "Unknown Codex error")

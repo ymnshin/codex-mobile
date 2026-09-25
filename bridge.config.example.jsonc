@@ -24,6 +24,8 @@
   // Covers `/codex send` starting a new turn, queueing while busy, "Steer instead",
   // `/codex send mode:steer`, and queued-message retraction.
   "messageWriteBacks": {
+    // Auth/quota pauses preserve pending input. A 10-second watchdog rechecks safely.
+    // /codex status shows reasons; /codex retry never resends uncertain deliveries.
     "allowFromDiscord": true,
     // Optional plain-text input, OFF by default. Use only explicitly allowed mapped
     // guild text channels, and also set discovery.allowedThreadIds below.

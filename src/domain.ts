@@ -484,6 +484,7 @@ export interface ProposedPlanActionRecord {
 export type WriteBackQueueStatus =
   | "pending"
   | "sending"
+  | "uncertain"
   | "sent"
   | "failed"
   | "retracted";

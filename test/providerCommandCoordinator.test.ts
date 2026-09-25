@@ -89,6 +89,7 @@ function createHarness(options: {
     error: string | null;
   }> = [];
   let nextWriteBackQueueId = 1;
+  const recoveryMeta = new Map<string, string>();
   const queueCalls: string[] = [];
   const flushCalls: string[] = [];
   const clearQueuedCalls: string[] = [];
@@ -106,6 +107,11 @@ function createHarness(options: {
         }
     },
     stateStore: {
+      getBridgeMetaValue: (key: string) => recoveryMeta.get(key) ?? null,
+      setBridgeMetaValue: (key: string, value: string) => recoveryMeta.set(key, value),
+      markWriteBackDispatchStarted: (_id: number) => {},
+      getDiscordMessageIdForQueueItem: (_id: number) => null,
+      retractUncertainWriteBackQueueItem: (_threadId: string) => null,
       getThreadBridge: (threadId: string) => bridges.get(threadId),
       findThreadBridgeByDiscordChannelId: (channelId: string) =>
         [...bridges.values()].find((bridge) => bridge.discordChannelId === channelId) ?? null,
@@ -216,6 +222,7 @@ function createHarness(options: {
       }
     },
     codexAdapter: {
+      checkWriteBackAvailability: async () => ({ ready: true }),
       readThread: async (threadId: string) => {
         readThreadCalls.push(threadId);
         return {

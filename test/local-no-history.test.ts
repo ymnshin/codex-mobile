@@ -1,5 +1,5 @@
 import {
-  test, assert, createBridgeConfigFromPreset, createBridgeTestRig, FakeSessionEventTailer
+  test, assert, createBridgeConfigFromPreset, createBridgeTestRig, FakeSessionEventTailer, FakeDesktopIpcClient
 } from "./helpers/bridgeIntegration.js";
 
 for (const useSession of [false, true]) {
@@ -48,6 +48,9 @@ for (const useSession of [false, true]) {
         type: "sessionUserMessage", threadId: thread.id, turnId: "new_turn", itemId: "new_user",
         timestampMs: (now + 1) * 1000, text: "new live question"
       }]);
+      const cursorBeforeRefresh = store.getThreadBridge(thread.id)?.latestMirroredCursor;
+      await bridge.maybeAttachThread({ summary: { ...thread, updatedAt: now + 2 }, source: "app-server" }, false);
+      assert.equal(store.getThreadBridge(thread.id)?.latestMirroredCursor, cursorBeforeRefresh);
       codex.emit("notification", { method: "item/completed", params: {
         threadId: thread.id, turnId: "new_turn", item: {
           type: "userMessage", id: "new_user", content: [{ type: "text", text: "new live question" }]
@@ -59,6 +62,61 @@ for (const useSession of [false, true]) {
     } finally { await bridge.stop(); }
   });
 }
+
+test("zero-history discovery refresh does not skip a live final or strand the FIFO queue", async () => {
+  const tailer = new FakeSessionEventTailer();
+  const desktop = new FakeDesktopIpcClient();
+  const starts: string[] = [];
+  (desktop as any).startTurn = async (_threadId: string, params: Record<string, unknown>) => {
+    starts.push((params.input as Array<{ text: string }>)[0]!.text);
+    return { result: { turn: { id: `queued_turn_${starts.length}`, status: "inProgress" } } };
+  };
+  const { codex, discord, bridge, store } = createBridgeTestRig({
+    sessionEventTailer: tailer, desktopIpcClient: desktop,
+    runtimeConfig: createBridgeConfigFromPreset("recommended", { allowedUserIds: ["user_1"] }, {
+      startupBackfill: { maxCodexMessages: 0 }, retention: { maxTurnsPerThread: 0 }
+    })
+  });
+  const now = Math.floor(Date.now() / 1000);
+  const thread = { id: "live_refresh", name: "Live refresh", preview: "Live refresh", modelProvider: null,
+    createdAt: now - 60, updatedAt: now, ephemeral: false, status: { type: "active" as const, activeFlags: [] } };
+  codex.threads = [thread];
+  codex.metadata.set(thread.id, { cwd: "C:\\repo", repoName: "repo" });
+  codex.threadDetails.set(thread.id, { ...thread, turns: [] });
+  try {
+    await bridge.start();
+    await bridge.handleSessionEvent({ type: "sessionUserMessage", threadId: thread.id, turnId: "live_turn",
+      timestampMs: (now + 1) * 1000, text: "Current live question", sourceOrder: "00000001", eventKey: "live_user" });
+    const channel = store.getThreadBridge(thread.id)!.discordChannelId;
+    const actor = { userId: "user_1", username: "controller", roleIds: [] };
+    await discord.handlers!.onSendCommand(actor, channel, "First follow-up", "queue");
+    await discord.handlers!.onSendCommand(actor, channel, "Second follow-up", "queue");
+    assert.deepEqual(starts, []);
+    const fastForwards = tailer.fastForwardedThreadIds.length;
+    tailer.setEvents(thread.id, [{ type: "sessionAgentMessage", threadId: thread.id, turnId: "live_turn",
+      timestampMs: (now + 2) * 1000, text: "Live final response", phase: "final_answer",
+      sourceOrder: "00000002", eventKey: "live_final" }]);
+    // A normal discovery refresh can race a final waiting to be polled.
+    await bridge.maybeAttachThread({ summary: { ...thread, updatedAt: now + 3 }, source: "app-server" }, false);
+    assert.equal(tailer.fastForwardedThreadIds.length, fastForwards);
+    await bridge.pollLocalSessionEvents();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert([...discord.sentTextMessages, ...discord.liveTextMessages]
+      .some(message => message.content.includes("Live final response")));
+    assert.deepEqual(starts, ["First follow-up"]);
+    assert.deepEqual(store.listWriteBackQueueItems(thread.id).map(row => row.status), ["sent", "pending"]);
+    await bridge.handleSessionEvent({ type: "sessionAgentMessage", threadId: thread.id, turnId: "queued_turn_1",
+      timestampMs: (now + 4) * 1000, text: "First follow-up response", phase: "final_answer",
+      sourceOrder: "00000003", eventKey: "queued_final_1" });
+    assert.deepEqual(starts, ["First follow-up", "Second follow-up"]);
+    await bridge.handleSessionEvent({ type: "sessionAgentMessage", threadId: thread.id, turnId: "queued_turn_2",
+      timestampMs: (now + 5) * 1000, text: "Second follow-up response", phase: "final_answer",
+      sourceOrder: "00000004", eventKey: "queued_final_2" });
+    assert.deepEqual(store.listWriteBackQueueItems(thread.id).map(row => row.status), ["sent", "sent"]);
+    assert.equal(starts.length, 2);
+    assert.deepEqual(codex.resumedThreadIds, [], "the Desktop writer must not be resumed in the observer app-server");
+  } finally { await bridge.stop(); }
+});
 
 test("zero startup history remains blocked if the app-server frontier cannot be read", async () => {
   const { codex, discord, bridge } = createBridgeTestRig({

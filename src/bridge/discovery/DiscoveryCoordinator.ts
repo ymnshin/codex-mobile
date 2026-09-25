@@ -900,16 +900,23 @@ export class DiscoveryCoordinator {
         this.runtime.isColdStart &&
         isStartup;
       const shouldInitializeThreadHistory = !existing || shouldReinitializeDiscordHistory || shouldRepairConversationAnchor;
+      const noStartupHistory = this.context.runtimeConfig.startupBackfill.maxCodexMessages === 0;
+      const shouldEstablishNoHistoryFrontier = noStartupHistory && (
+        isStartup || !current || shouldReinitializeDiscordHistory ||
+        this.runtime.unseededNoHistoryThreads.has(thread.id)
+      );
       const shouldCaptureStartupSessionFrontier =
         preferSessionStream &&
-        (shouldInitializeThreadHistory || shouldRepairExistingStartupHistory || shouldDeferColdStartHistory);
+        (noStartupHistory
+          ? shouldEstablishNoHistoryFrontier
+          : shouldInitializeThreadHistory || shouldRepairExistingStartupHistory || shouldDeferColdStartHistory);
       const startupSessionFrontier = shouldCaptureStartupSessionFrontier
         ? await this.deps.captureThreadSessionFrontier(thread.id)
         : null;
       if (startupSessionFrontier) {
         await this.deps.markThreadSessionFrontier(thread.id, startupSessionFrontier);
       }
-      if (existing && (shouldReinitializeDiscordHistory || shouldRepairConversationAnchor)) {
+      if (existing && (shouldReinitializeDiscordHistory || (shouldRepairConversationAnchor && !noStartupHistory))) {
         this.deps.resetThreadMirrorState(thread.id);
       }
       let flushStatusDurationMs = 0;
@@ -925,18 +932,23 @@ export class DiscoveryCoordinator {
       let startupHistoryDurationMs = 0;
       let replayFrontierDurationMs = 0;
       let resumeDurationMs = 0;
-      if (this.context.runtimeConfig.startupBackfill.maxCodexMessages === 0) {
+      if (noStartupHistory) {
         // Zero is an explicit opt-out, including user anchors and structural events.
-        // The session frontier above preserves only events arriving during attach.
-        if (preferSessionStream) {
-          if (!startupSessionFrontier && !(await this.deps.fastForwardThread(thread.id))) {
-            this.runtime.unseededNoHistoryThreads.add(thread.id);
-            this.context.logger.warn({ threadId: thread.id }, "Could not establish a live-only session frontier; mirroring remains blocked.");
+        // Establish the frontier only when attaching, never on ordinary refresh:
+        // fast-forwarding a running thread can discard its final and strand input.
+        if (shouldEstablishNoHistoryFrontier) {
+          if (preferSessionStream) {
+            if (!startupSessionFrontier && !(await this.deps.fastForwardThread(thread.id))) {
+              this.runtime.unseededNoHistoryThreads.add(thread.id);
+              this.context.logger.warn({ threadId: thread.id }, "Could not establish a live-only session frontier; mirroring remains blocked.");
+            } else {
+              this.runtime.unseededNoHistoryThreads.delete(thread.id);
+            }
+          } else {
+            seededExistingCursor = await this.deps.seedMirrorCursorFromStableFrontier(thread.id, true);
           }
-        } else {
-          seededExistingCursor = await this.deps.seedMirrorCursorFromStableFrontier(thread.id, true);
+          this.printScopedProgress("attach", `Skipped startup history for ${shortThreadId(thread.id)}. Live updates will continue.`);
         }
-        this.printScopedProgress("attach", `Skipped startup history for ${shortThreadId(thread.id)}. Live updates will continue.`);
       } else if (shouldDeferColdStartHistory) {
         if (preferSessionStream) {
           const replayStartedAt = startupTimingNow();
@@ -1030,6 +1042,7 @@ export class DiscoveryCoordinator {
       }
       if (
         existing &&
+        !noStartupHistory &&
         !seededExistingCursor &&
         !shouldReinitializeDiscordHistory &&
         !shouldRepairConversationAnchor &&
@@ -1043,6 +1056,9 @@ export class DiscoveryCoordinator {
       }
       if (
         runtime.channelKind !== "subagent" &&
+        // Desktop is the writer. Its IPC plus local log stream do not need a
+        // second app-server to resume (and claim) the same conversation.
+        !(preferSessionStream && this.context.desktopIpcClient?.isReady()) &&
         this.shouldResumeAppServerThread(candidate, existing ?? null, isStartup, forceAttach)
       ) {
         const resumeStartedAt = startupTimingNow();

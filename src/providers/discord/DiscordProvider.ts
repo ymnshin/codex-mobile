@@ -1008,7 +1008,7 @@ export class DiscordProvider implements BridgeProvider {
     if (!result.content || result.content.startsWith("Started a new Codex turn.")) return;
     await message.reply({
       content: result.content.startsWith("Queued for the next turn.")
-        ? "次のターンに追加しました。"
+        ? "受付しました。現在の処理が終わり次第、順番に開始し、返答をここに送ります。"
         : result.content.split("\n>")[0]!,
       allowedMentions: { parse: [], repliedUser: false }
     });
@@ -1030,13 +1030,15 @@ export class DiscordProvider implements BridgeProvider {
       subcommand === "cleanid" ||
       subcommand === "cleanall";
 
-    if (shouldDefer) {
+    if (shouldDefer || subcommand === "retry") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     }
 
     let result: DiscordCommandResult;
     if (subcommand === "status") {
       result = await handlers.onStatusCommand(actor);
+    } else if (subcommand === "retry") {
+      result = await handlers.onRetryCommand?.(actor, interaction.channelId) ?? { content: "Queue retry is unavailable.", ephemeral: true };
     } else if (subcommand === "send") {
       const mode = interaction.options.getString("mode", false);
       result = await handlers.onSendCommand(
@@ -1969,6 +1971,9 @@ export class DiscordProvider implements BridgeProvider {
       .setDescription("Monitor and control the Codex Discord bridge.")
       .addSubcommand((subcommand) =>
         subcommand.setName("status").setDescription("List mapped Codex conversations.")
+      )
+      .addSubcommand((subcommand) =>
+        subcommand.setName("retry").setDescription("Recheck safe pending messages without resending unconfirmed deliveries.")
       )
       .addSubcommand((subcommand) =>
         subcommand

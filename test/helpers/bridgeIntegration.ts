@@ -87,6 +87,9 @@ export class FakeCodexAdapter extends EventEmitter {
   async stop() {
     this.started = false;
   }
+  async checkWriteBackAvailability(_refreshToken = false): Promise<import("../../src/codex/WriteBackAvailability.js").WriteBackAvailability> {
+    return { ready: true };
+  }
   async listThreads() {
     return this.threads;
   }
@@ -1022,4 +1025,3 @@ export class FakeDiscordAdapter {
   }
   async detachDiscordLocation() {}
 }
-

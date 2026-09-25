@@ -21,6 +21,8 @@ import {
 } from "../runtime/BridgeRuntimeState.js";
 import type { DesktopConversationState } from "../../codex/CodexDesktopIpcClient.js";
 import { DesktopSteerPayloadBuilder, type DesktopSteerRestoreStateSource } from "./DesktopSteerPayloadBuilder.js";
+import { EMPTY_QUEUE_RECOVERY, queueRetryDelay, WriteBackNotDispatchedError,
+  type QueueRecoveryState, type QueuePauseReason, type WriteBackAvailability } from "../../codex/WriteBackAvailability.js";
 
 type InternalSteerSource = "approval-feedback" | "internal" | "discord";
 const WRITE_BACK_MAX_TEXT_LENGTH = 2000;
@@ -89,9 +91,12 @@ export class ProviderCommandCoordinator {
         .map((bridge) => {
           const state = this.runtime.threadState.get(bridge.codexThreadId);
           const label = state ? statusLabel(state.status) : "Unknown";
-          return `\`${shortThreadId(bridge.codexThreadId)}\` ${bridge.projectName} ${label} <#${bridge.discordChannelId}>`;
+          const items = this.context.stateStore.listWriteBackQueueItems(bridge.codexThreadId);
+          const recovery = this.getQueueRecovery(bridge.codexThreadId);
+          const counts = ["pending", "sending", "uncertain"].map((status) => `${status}: ${items.filter((item) => item.status === status).length}`).join(", ");
+          return `\`${shortThreadId(bridge.codexThreadId)}\` ${bridge.projectName} ${label} <#${bridge.discordChannelId}>\n${counts}; pause: ${recovery.reason ?? "none"}; last: ${recovery.lastFailure ?? "none"}; retry: ${recovery.nextRetryAt ? new Date(recovery.nextRetryAt).toISOString() : "—"}`;
         })
-        .join("\n")
+        .join("\n").slice(0, 1900)
     };
   }
 
@@ -169,7 +174,9 @@ export class ProviderCommandCoordinator {
       return target.result;
     }
 
-    const retracted = this.context.stateStore.retractLatestPendingWriteBackQueueItem(target.bridge.codexThreadId);
+    // Unconfirmed deliveries block FIFO. Retract acknowledges them without sending again.
+    const uncertain = this.context.stateStore.retractUncertainWriteBackQueueItem(target.bridge.codexThreadId);
+    const retracted = uncertain ?? this.context.stateStore.retractLatestPendingWriteBackQueueItem(target.bridge.codexThreadId);
     if (!retracted) {
       return {
         content: "There is no pending queued Codex message to retract in this channel.",
@@ -179,7 +186,8 @@ export class ProviderCommandCoordinator {
 
     this.appendWriteBackCanonicalEvent(retracted, "writeBackRetracted", "Retracted queued Discord message.");
     return {
-      content: this.formatWriteBackMessage("Retracted the latest pending queued message.", retracted.text),
+      content: uncertain ? "Unconfirmed queue entry withdrawn. This does not undo a turn that may already have started. Check Codex before posting it again."
+        : this.formatWriteBackMessage("Retracted the latest pending queued message.", retracted.text),
       ephemeral: true
     };
   }
@@ -216,6 +224,14 @@ export class ProviderCommandCoordinator {
       };
     }
 
+    const queued = this.context.stateStore.getWriteBackQueueItem(queueItemId);
+    if (queued?.status === "pending") {
+      const health = await this.context.codexAdapter.checkWriteBackAvailability();
+      if (!health.ready) {
+        await this.pauseQueue(queued.threadId, health);
+        return { content: "Codex is unavailable; the queued message is preserved. Use /codex status.", ephemeral: true };
+      }
+    }
     const claimed = this.context.stateStore.claimWriteBackQueueItem(queueItemId);
     if (!claimed) {
       return {
@@ -225,6 +241,7 @@ export class ProviderCommandCoordinator {
     }
 
     try {
+      this.context.stateStore.markWriteBackDispatchStarted(claimed.id);
       const steeredTurnId = await this.steerResolvedThreadOrThrow(claimed.threadId, claimed.text, "discord");
       this.context.stateStore.markWriteBackQueueItemSent(claimed.id);
       const sent = this.context.stateStore.getWriteBackQueueItem(claimed.id) ?? claimed;
@@ -238,21 +255,14 @@ export class ProviderCommandCoordinator {
         ephemeral: true
       };
     } catch (error) {
-      const errorMessage = this.formatErrorMessage(error, "Failed to steer queued Codex message.");
-      this.context.stateStore.restoreWriteBackQueueItemPending(claimed.id, errorMessage);
-      this.appendWriteBackCanonicalEvent(
-        {
-          ...claimed,
-          status: "pending",
-          error: errorMessage
-        },
-        "writeBackFailed",
-        errorMessage
-      );
+      const safe = error instanceof WriteBackNotDispatchedError || this.isInactiveSteerError(error);
+      if (safe) this.context.stateStore.restoreWriteBackQueueItemPending(claimed.id, "connection");
+      else this.context.stateStore.markWriteBackQueueItemUncertain(claimed.id);
+      await this.pauseQueue(claimed.threadId, { ready: false, reason: safe ? "connection" : "uncertain" });
       return {
-        content: errorMessage,
-        ephemeral: true,
-        buttons: this.buildWriteBackButtons(claimed, this.isThreadSteerable(claimed.threadId))
+        content: safe ? "Codex did not accept the queued message. It remains pending; use /codex status."
+          : "Delivery is unconfirmed. Automatic retry stopped; check Codex and use /codex retract.",
+        ephemeral: true
       };
     }
   }
@@ -291,39 +301,136 @@ export class ProviderCommandCoordinator {
       return null;
     }
 
-    const claimed = this.context.stateStore.claimNextPendingWriteBackQueueItem(threadId);
-    if (!claimed) {
-      return null;
-    }
     this.startingWriteBackThreads.add(threadId);
-
+    let claimed: WriteBackQueueRecord | null = null;
     try {
+      const recovery = this.getQueueRecovery(threadId);
+      if (recovery.nextRetryAt > Date.now()) return null;
+      if (!this.context.stateStore.countPendingWriteBackQueueItems(threadId)) return null;
+      const availability = await this.context.codexAdapter.checkWriteBackAvailability(recovery.reason === "auth");
+      if (!availability.ready) { await this.pauseQueue(threadId, availability); return null; }
+      if (this.isThreadBusy(threadId)) return null;
+      claimed = this.context.stateStore.claimNextPendingWriteBackQueueItem(threadId);
+      if (!claimed) return null;
+      const mapped = this.context.stateStore.getThreadBridge(threadId);
+      const allowedThreads = this.context.runtimeConfig.discovery?.allowedThreadIds ?? [];
+      const sourceId = this.context.stateStore.getDiscordMessageIdForQueueItem(claimed.id);
+      if (this.authorizeMessageWriteBack({ userId: claimed.actorUserId, roleIds: [], username: null }) ||
+          mapped?.discordChannelId !== claimed.discordChannelId ||
+          (allowedThreads.length > 0 && !allowedThreads.includes(threadId)) ||
+          (sourceId && (!allowedThreads.includes(threadId) || !this.context.runtimeConfig.messageWriteBacks.plainTextChannelIds?.includes(claimed.discordChannelId)))) {
+        this.context.stateStore.markWriteBackQueueItemFailed(claimed.id, "authorization_changed");
+        return null;
+      }
       const startedTurn = await this.startWriteBackTurn(claimed.threadId, claimed.text, options, claimed.id);
       if (!startedTurn?.alreadyCompleted) this.markWriteBackTurnStarted(claimed.threadId, startedTurn?.turnId);
       this.context.stateStore.markWriteBackQueueItemSent(claimed.id);
+      this.clearQueuePause(threadId);
       const sent = this.context.stateStore.getWriteBackQueueItem(claimed.id) ?? claimed;
       this.appendWriteBackCanonicalEvent(sent, "writeBackSent", "Started new Codex turn from queued Discord message.");
       if (startedTurn?.inProgress && !startedTurn.alreadyCompleted) await this.reactToDiscordInput(sent, "🤔", true);
       return sent;
     } catch (error) {
-      const errorMessage = this.formatErrorMessage(error, "Failed to start Codex turn from queued Discord message.");
-      this.context.stateStore.markWriteBackQueueItemFailed(claimed.id, errorMessage);
-      this.appendWriteBackCanonicalEvent(
-        {
-          ...claimed,
-          status: "failed",
-          error: errorMessage
-        },
-        "writeBackFailed",
-        errorMessage
-      );
-      return this.context.stateStore.getWriteBackQueueItem(claimed.id) ?? {
-        ...claimed,
-        status: "failed",
-        error: errorMessage
-      };
+      if (!claimed) { await this.pauseQueue(threadId, { ready: false, reason: "connection" }); return null; }
+      // A timed-out/disconnected start might have executed. Health recovery is not delivery proof.
+      const rejected = error instanceof WriteBackNotDispatchedError;
+      if (rejected) this.context.stateStore.restoreWriteBackQueueItemPending(claimed.id, error.reason);
+      else this.context.stateStore.markWriteBackQueueItemUncertain(claimed.id);
+      const health = await this.context.codexAdapter.checkWriteBackAvailability(rejected && error.reason === "auth")
+        .catch((): WriteBackAvailability => ({ ready: false, reason: "connection" }));
+      await this.pauseQueue(threadId, rejected ? { ready: false, reason: error.reason, ...(health.retryAt ? { retryAt: health.retryAt } : {}) }
+        : { ready: false, reason: "uncertain" });
+      return this.context.stateStore.getWriteBackQueueItem(claimed.id) ?? null;
     } finally {
       this.startingWriteBackThreads.delete(threadId);
+    }
+  }
+
+  getQueueRecovery(threadId: string): QueueRecoveryState {
+    try {
+      return { ...EMPTY_QUEUE_RECOVERY, ...JSON.parse(this.context.stateStore.getBridgeMetaValue(`queue_recovery:${threadId}`) ?? "{}") };
+    } catch { return { ...EMPTY_QUEUE_RECOVERY }; }
+  }
+
+  private saveQueueRecovery(threadId: string, state: QueueRecoveryState): void {
+    this.context.stateStore.setBridgeMetaValue(`queue_recovery:${threadId}`, JSON.stringify(state));
+  }
+
+  private clearQueuePause(threadId: string): void {
+    const previous = this.getQueueRecovery(threadId);
+    this.saveQueueRecovery(threadId, { ...previous, reason: null, nextRetryAt: 0, failures: 0 });
+  }
+
+  private async pauseQueue(threadId: string, availability: WriteBackAvailability): Promise<void> {
+    const state = this.getQueueRecovery(threadId);
+    const now = Date.now();
+    const reason = availability.reason ?? "connection";
+    const notify = now - state.lastNotifiedAt >= 300_000;
+    this.saveQueueRecovery(threadId, { reason, lastFailure: reason, failures: state.failures + 1,
+      nextRetryAt: reason === "uncertain" ? 0 : Math.max(now + queueRetryDelay(state.failures + 1), availability.retryAt ?? 0),
+      lastNotifiedAt: notify ? now : state.lastNotifiedAt });
+    this.context.logger.warn({ category: reason }, "Write-back queue paused; input retained.");
+    if (!notify) return;
+    const bridge = this.context.stateStore.getThreadBridge(threadId);
+    if (!bridge) return;
+    const messages: Record<QueuePauseReason, string> = {
+      auth: "Codex の認証を確認できないため、投稿を保存して待機しています。Desktop で認証が復旧すると自動再開します。",
+      usage: "Codex の利用上限に達したため、投稿を保存して待機しています。上限リセット後に自動再確認します。",
+      desktop: "Codex Desktop の会話への接続を待っています。投稿は保存済みで、接続復旧後に自動再開します。",
+      connection: "Codex の接続・利用状況を確認できないため、投稿を保存して再接続を待っています。",
+      uncertain: "Codex への送信結果を確認できません。重複実行を避けて自動再送を停止しました。Desktop を確認し、/codex retract で不明な受付を撤回してください。"
+    };
+    try { await this.context.provider.sendTextMessage(bridge.discordChannelId, `${messages[reason]}\n/codex status: 状態確認 /codex retry: 安全な保留分を再確認`); }
+    catch { this.context.logger.warn({ category: "queue_notice_unavailable" }, "Queue notification unavailable; input retained."); }
+  }
+
+  async handleRetryCommand(actor: ProviderActorContext, channelId: string): Promise<DiscordCommandResult> {
+    const denied = this.authorizeMessageWriteBack(actor);
+    if (denied) return denied;
+    const target = this.resolveMappedThreadFromChannel(channelId);
+    if (!target.ok) return target.result;
+    const threadId = target.bridge.codexThreadId;
+    const previous = this.getQueueRecovery(threadId);
+    // This only rechecks safe pending work; it never resets uncertain/sent items.
+    this.saveQueueRecovery(threadId, { ...previous, nextRetryAt: 0 });
+    await this.runQueueWatchdog(threadId);
+    return { content: `Queue rechecked. pause: ${this.getQueueRecovery(threadId).reason ?? "none"}. Use /codex status for details.`, ephemeral: true };
+  }
+
+  async runQueueWatchdog(onlyThreadId?: string): Promise<void> {
+    for (const bridge of this.context.stateStore.listThreadBridgesByKind("conversation")) {
+      const threadId = bridge.codexThreadId;
+      if (onlyThreadId && onlyThreadId !== threadId) continue;
+      const config = this.context.runtimeConfig;
+      if (!config.messageWriteBacks.allowFromDiscord || this.startingWriteBackThreads.has(threadId) ||
+          (config.discovery.allowedThreadIds.length && !config.discovery.allowedThreadIds.includes(threadId))) continue;
+      this.context.stateStore.recoverExpiredWriteBackClaims(threadId);
+      const records = this.context.stateStore.listWriteBackQueueItems(threadId);
+      if (records.some((item) => item.status === "uncertain")) {
+        if (this.getQueueRecovery(threadId).reason !== "uncertain") await this.pauseQueue(threadId, { ready: false, reason: "uncertain" });
+        continue;
+      }
+      if (!records.some((item) => item.status === "pending") || records.some((item) => item.status === "sending")) continue;
+      const recovery = this.getQueueRecovery(threadId);
+      if (recovery.nextRetryAt > Date.now()) continue;
+      const health = await this.context.codexAdapter.checkWriteBackAvailability(recovery.reason === "auth");
+      if (!health.ready) { await this.pauseQueue(threadId, health); continue; }
+      try {
+        // A read-only snapshot, never resume/take ownership merely to inspect idle state.
+        const details = await this.context.codexAdapter.readThread(threadId, true);
+        const latest = details.turns?.at(-1) as { id: string; status: string } | undefined;
+        if (details.status.type === "active" || latest?.status === "inProgress") continue;
+        const state = this.runtime.threadState.get(threadId);
+        const tracked = state?.lastTurnId ?? bridge.lastTurnId;
+        if (this.isThreadBusy(threadId)) {
+          // Only the exact tracked turn's terminal evidence can clear a stale busy flag.
+          if (!latest || latest.id !== tracked || !["completed", "interrupted", "failed"].includes(latest.status)) continue;
+          if (state) { markThreadTurnCompleted(state, latest.status as "completed" | "interrupted" | "failed"); this.deps.persistThreadState(state); }
+          else this.context.stateStore.upsertThreadBridge({ ...bridge, lastStatusType: "idle", lastTurnStatus: "completed" });
+          await this.finishDiscordInputTurn(threadId, latest.id);
+        } else if (details.status.type !== "idle" && !latest) continue;
+        await this.drainNextQueuedWriteBackMessage(threadId, { skipResumeForCliSession: true });
+      } catch { await this.pauseQueue(threadId, { ready: false, reason: "connection" }); }
     }
   }
 
@@ -393,9 +500,9 @@ export class ProviderCommandCoordinator {
           ephemeral: true
         };
       }
-      if (sent?.id === queued.id && sent.status === "failed") {
+      if (sent?.id === queued.id && sent.status === "uncertain") {
         return {
-          content: sent.error ?? "Failed to start Codex turn from your message.",
+          content: "送信結果が不明なため自動再送を停止しました。/codex status を確認してください。",
           ephemeral: true
         };
       }
@@ -773,6 +880,9 @@ export class ProviderCommandCoordinator {
   private markWriteBackTurnStarted(threadId: string, turnId?: string): void {
     const state = this.runtime.threadState.get(threadId);
     if (!state) {
+      const bridge = this.context.stateStore.getThreadBridge(threadId);
+      if (bridge) this.context.stateStore.upsertThreadBridge({ ...bridge, lastTurnId: turnId ?? null,
+        lastStatusType: "active", lastTurnStatus: "in_progress" });
       return;
     }
     state.lastTurnId = turnId ?? null;
@@ -857,11 +967,13 @@ export class ProviderCommandCoordinator {
       this.context.stateStore.getThreadBridge(threadId)?.sourceKind ??
       "app-server";
     if (sourceKind === "cli-session" && options.skipResumeForCliSession) {
+      if (queueId !== undefined) this.context.stateStore.markWriteBackDispatchStarted(queueId);
       await this.context.codexAdapter.startTurn(threadId, text);
       return null;
     }
 
     if (sourceKind === "app-server" && (await this.isBridgeRemoteCliThread(threadId))) {
+      if (queueId !== undefined) this.context.stateStore.markWriteBackDispatchStarted(queueId);
       await this.context.codexAdapter.startTurn(threadId, text);
       return null;
     }
@@ -874,7 +986,7 @@ export class ProviderCommandCoordinator {
         const result = await desktopIpcClient.startTurn(threadId, {
           input: [{ type: "text", text }],
           attachments: []
-        });
+        }, () => { if (queueId !== undefined) this.context.stateStore.markWriteBackDispatchStarted(queueId); });
         // The exact returned ID links the original; a pending RPC is not start evidence.
         const turn = (result as { result?: { turn?: { id?: unknown; status?: unknown } } } | null)?.result?.turn;
         if (queueId !== undefined && typeof turn?.id === "string" && turn.id.trim()) {
@@ -890,7 +1002,9 @@ export class ProviderCommandCoordinator {
       }
     }
 
-    await this.context.codexAdapter.resumeThread(threadId);
+    try { await this.context.codexAdapter.resumeThread(threadId, { timeoutMs: 10_000 }); }
+    catch { throw new WriteBackNotDispatchedError("connection"); }
+    if (queueId !== undefined) this.context.stateStore.markWriteBackDispatchStarted(queueId);
     await this.context.codexAdapter.startTurn(threadId, text);
     return null;
   }

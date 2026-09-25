@@ -5,6 +5,7 @@ import type { CodexServerRequest } from "../domain.js";
 import type { Logger } from "../logger.js";
 import { resolveDesktopIpcPath } from "../platform.js";
 import { withLogScope } from "../util/terminalLogging.js";
+import { classifyCodexRejection, WriteBackNotDispatchedError } from "./WriteBackAvailability.js";
 const REQUEST_VERSION = 1;
 // Desktop 26.911 uses a request/context envelope for start-turn (IPC v2).
 // Other follower methods retain their own v1 wire contracts.
@@ -21,6 +22,7 @@ interface PendingIpcRequest {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
+  includeResponse?: boolean;
 }
 
 interface PendingSteerRequest {
@@ -287,10 +289,17 @@ export class CodexDesktopIpcClient extends EventEmitter {
 
   async startTurn(
     conversationId: string,
-    turnStartParams: Record<string, unknown>
+    turnStartParams: Record<string, unknown>,
+    beforeDispatch?: () => void
   ): Promise<unknown> {
-    const targetClientId = this.ownerClientIdsByThread.get(conversationId) ?? null;
+    // A Desktop renderer can reconnect without closing our IPC socket. Its old
+    // broadcast owner ID is then stale; resolve the current owner before sending
+    // any input, rather than retrying a possibly delivered start request.
+    let targetClientId: string;
+    try { targetClientId = await this.discoverThreadOwner(conversationId); }
+    catch { throw new WriteBackNotDispatchedError("desktop"); }
     const { attachments = [], ...request } = turnStartParams;
+    beforeDispatch?.();
     return this.sendThreadFollowerRequest(
       "thread-follower-start-turn",
       {
@@ -305,6 +314,21 @@ export class CodexDesktopIpcClient extends EventEmitter {
         ...(targetClientId ? { targetClientId } : {})
       }
     );
+  }
+
+  async discoverThreadOwner(conversationId: string): Promise<string> {
+    this.ownerClientIdsByThread.delete(conversationId);
+    const response = await this.sendFrame(
+      "thread-owner-discovery",
+      { hostId: "local", conversationId },
+      { includeResponse: true }
+    ) as JsonFrame;
+    const ownerClientId = response.handledByClientId;
+    if (typeof ownerClientId !== "string" || !ownerClientId.trim()) {
+      throw new Error("Codex Desktop IPC owner discovery returned no client ID.");
+    }
+    this.ownerClientIdsByThread.set(conversationId, ownerClientId);
+    return ownerClientId;
   }
 
   private async connectAndInitialize(): Promise<void> {
@@ -491,7 +515,8 @@ export class CodexDesktopIpcClient extends EventEmitter {
             withLogScope("ipc-steer", "Desktop IPC steer request completed with an error response.")
           );
         }
-        pending.reject(new Error(message));
+        const reason = classifyCodexRejection(frame.error) ?? (message === "no-client-found" ? "desktop" : null);
+        pending.reject(reason ? new WriteBackNotDispatchedError(reason) : new Error(message));
         return;
       }
 
@@ -508,7 +533,7 @@ export class CodexDesktopIpcClient extends EventEmitter {
           withLogScope("ipc-steer", "Desktop IPC steer request completed successfully.")
         );
       }
-      pending.resolve(frame.result);
+      pending.resolve(pending.includeResponse ? frame : frame.result);
       return;
     }
 
@@ -785,6 +810,7 @@ export class CodexDesktopIpcClient extends EventEmitter {
       version?: number;
       timeoutMs?: number;
       targetClientId?: string;
+      includeResponse?: boolean;
     } = {}
   ): Promise<unknown> {
     await this.start();
@@ -800,6 +826,7 @@ export class CodexDesktopIpcClient extends EventEmitter {
       version?: number;
       timeoutMs?: number;
       targetClientId?: string;
+      includeResponse?: boolean;
     } = {}
   ): Promise<unknown> {
     if (!this.socket) {
@@ -847,7 +874,7 @@ export class CodexDesktopIpcClient extends EventEmitter {
         reject(new Error(`Timed out waiting for Codex Desktop IPC response to ${method}.`));
       }, timeoutMs);
 
-      this.pendingRequests.set(requestId, { resolve, reject, timer });
+      this.pendingRequests.set(requestId, { resolve, reject, timer, includeResponse: overrides.includeResponse ?? false });
       if (pendingSteer) {
         this.pendingSteerRequestsById.set(requestId, pendingSteer);
         this.pendingSteerRequestsByThread.set(pendingSteer.conversationId, pendingSteer);

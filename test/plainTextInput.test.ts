@@ -10,9 +10,8 @@ import { createBridgeConfigFromPreset } from "../src/config.js";
 import { StateStore } from "../src/store/StateStore.js";
 import { createBridgeTestRig, FakeDesktopIpcClient, testApprovalsConfig } from "./helpers/bridgeIntegration.js";
 
-// Synthetic snowflakes, not live Discord resources.
 const CHANNEL = "1111111111111111111";
-const MESSAGE = "2222222222222222222";
+const MESSAGE = "1552964055646343999";
 const THREAD = "plain-test-thread";
 
 function providerHarness(enabled = true) {
@@ -85,7 +84,7 @@ test("plain text rejects attachments without fetching them and gives short queue
   assert.match(h.replies[0]!.content, /文字だけ/);
   h.internal.handlers.onSendCommand = async () => ({ content: "Queued for the next turn. Position 1.\n> secret original" });
   await h.internal.handlePlainTextMessage(h.message);
-  assert.equal(h.replies[1]!.content, "次のターンに追加しました。");
+  assert.equal(h.replies[1]!.content, "受付しました。現在の処理が終わり次第、順番に開始し、返答をここに送ります。");
   h.internal.handlers.onSendCommand = async () => ({ content: "Failed to start Codex turn. no-client-found" });
   await h.internal.handlePlainTextMessage(h.message);
   assert.match(h.replies[2]!.content, /no-client-found/);
@@ -111,8 +110,8 @@ test("Discord source receipt and queue insertion are atomic and dedupe survives 
     assert.equal(store.listWriteBackQueueItems().length, 1);
     assert(store.claimDiscordMessageEcho(THREAD, "turn_exact", "hello", "original_item"));
     // A failed queue insertion rolls back its receipt, so it can be submitted correctly.
-    assert.throws(() => store.createDiscordMessageQueueItemOnce("1552964055646344000", { ...input, text: null as never }));
-    assert.equal(store.hasDiscordMessageInput("1552964055646344000"), false);
+    assert.throws(() => store.createDiscordMessageQueueItemOnce("3333333333333333330", { ...input, text: null as never }));
+    assert.equal(store.hasDiscordMessageInput("3333333333333333330"), false);
   } finally { store.close(); }
 });
 
@@ -139,9 +138,9 @@ test("plain text stays in the existing busy-thread queue, rejects duplicates and
     assert.equal(store.listWriteBackQueueItems().length, 1);
     assert.deepEqual(codex.startTurnRequests, []);
     assert.deepEqual(desktop.responses, []);
-    const rejected = await discord.handlers!.onSendCommand({ ...actor, userId: "other" }, CHANNEL, "bad", "queue", "1552964055646344001");
+    const rejected = await discord.handlers!.onSendCommand({ ...actor, userId: "other" }, CHANNEL, "bad", "queue", "3333333333333333331");
     assert.match(rejected.content, /not allowed/);
-    const wrongMode = await discord.handlers!.onSendCommand(actor, CHANNEL, "bad", "steer", "1552964055646344002");
+    const wrongMode = await discord.handlers!.onSendCommand(actor, CHANNEL, "bad", "steer", "3333333333333333332");
     assert.match(wrongMode.content, /not enabled/);
     const slash = await discord.handlers!.onSendCommand(actor, CHANNEL, "Slash instruction", "queue");
     assert.match(slash.content, /Queued for the next turn/);
