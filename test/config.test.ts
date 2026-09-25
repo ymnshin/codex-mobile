@@ -51,6 +51,32 @@ test("recommended preset enables Discord message write-back with grouped activit
   assert.equal(config.visibility.fileEdits, true);
 });
 
+test("loadConfig accepts zero turn retention without enabling startup history and rejects invalid limits", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "codex-mobile-retention-config-"));
+  const bridgeConfigPath = path.join(dir, "bridge.config.json");
+  const env = {
+    DISCORD_BOT_TOKEN: "token",
+    DISCORD_APPLICATION_ID: "app",
+    DISCORD_GUILD_ID: "guild",
+    DISCORD_CONTROLLER_USER_ID: "user_1",
+    CODEX_COMMAND: "codex",
+    BRIDGE_CONFIG_PATH: bridgeConfigPath
+  };
+  const writeLimit = (maxTurnsPerThread: number) => writeFileSync(bridgeConfigPath, JSON.stringify({
+    preset: "recommended",
+    retention: { maxTurnsPerThread },
+    startupBackfill: { maxCodexMessages: 0 }
+  }));
+  writeLimit(0);
+  const config = loadConfig(env).bridge;
+  assert.equal(config.retention.maxTurnsPerThread, 0);
+  assert.equal(config.startupBackfill.maxCodexMessages, 0);
+  for (const limit of [-1, 0.5, 21]) {
+    writeLimit(limit);
+    assert.throws(() => loadConfig(env), /maxTurnsPerThread/);
+  }
+});
+
 test("full preset uses ungrouped command and file activity with details", () => {
   const config = createBridgeConfigFromPreset("full", {
     allowFromDiscord: true,

@@ -185,7 +185,11 @@ export class CanonicalLedgerCoordinator {
   }
 
   private pruneRetainedTurns(threadId: string): void {
-    const maxTurns = Math.max(1, this.context.runtimeConfig.retention.maxTurnsPerThread);
+    const maxTurns = this.context.runtimeConfig.retention.maxTurnsPerThread;
+    // Match Discord retention: zero keeps the persisted turn index across restarts too.
+    if (maxTurns === 0) {
+      return;
+    }
     const records = this.listRetainedTurns(threadId);
     if (records.length <= maxTurns) {
       return;

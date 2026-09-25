@@ -58,7 +58,8 @@ function createComponents(
           {
             token: config.discordBotToken,
             applicationId: config.discordApplicationId,
-            guildId: config.discordGuildId
+            guildId: config.discordGuildId,
+            messageWriteBacks: config.bridge.messageWriteBacks
           },
           logger
         );
@@ -69,7 +70,8 @@ function createComponents(
           {
             token: config.discordBotToken,
             applicationId: config.discordApplicationId,
-            guildId: config.discordGuildId
+            guildId: config.discordGuildId,
+            messageWriteBacks: config.bridge.messageWriteBacks
           },
           logger
         );

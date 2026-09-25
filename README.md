@@ -1,423 +1,177 @@
-# codex-mobile
+# codex-mobile — DiscordからCodexと会話する
 
-## Introduction
+[NathanZane/codex-mobile](https://github.com/NathanZane/codex-mobile) をベースにした、**非公式・実験的な改善fork**です。OpenAIやDiscordの公式製品ではなく、上流作者による保証・推奨を示すものでもありません。
 
-I am addicted to building with Codex. The main issue with the app is that I cannot use it while away from my desktop. I built this side-project so that I can finally have Codex keep working while I'm buying groceries or watching a movie on the couch.
+同じWindows PC上で動くCodexとDiscordをつなぎ、専用チャンネルから指示し、返答や対応可能な承認要求を受け取ります。このforkでは、明示的に許可した通常投稿、受付・実行中のリアクション、会話履歴の保持を追加しました。
 
-`codex-mobile` is a local bridge that mirrors live Codex work and exact Codex approval requests into Discord.
+> An unofficial Windows-first fork of codex-mobile: opt-in, single-controller Discord conversation input, source-linked status reactions, and configurable history retention. Codex and the bridge stay on your own running PC. See the [English setup guide](README.en.md).
 
-It runs on the same machine as Codex, watches Codex Desktop and Codex CLI at the same time, posts selected activity to Discord, and routes supported approval decisions back into Codex.
+## 誰向け？
 
-Quick notes:
+- 自分のPC上のCodexを、スマートフォンのDiscordから確認・操作したい人
+- 自分だけが操作できる専用チャンネルで、会話履歴も残したい人
+- Bot・権限・ローカル設定を自分で管理できる人
 
-- Windows-first public beta. macOS is best-effort and not yet validated with Codex Desktop (probably won't work)
-- the bridge works only while your local machine and bridge process are running
-- Discord is the only adapter for now
-- Discord is a notification and control surface, not the source of truth
-- Discord write-back is limited to exact approval/plan actions and explicit `/codex send` commands from the configured controller user
-- Codex Desktop sub-agent approvals can be read-only until the sub-agent chat is opened in Desktop; see [How It Looks](#how-it-looks)
+PC、Codex Desktop、連携プロセスの起動が必要です。クラウド常駐サービスではありません。共有・公開サーバーでの運用、複数人による共同操作、企業向けの強固な権限管理には向きません。
 
-## How It Looks
+## このforkの変更点
 
-### Live Discord Mirror
+- **通常投稿はopt-in**：初期状態は従来の `/codex send`。設定した本人・サーバー・チャンネル・Codex会話に限り、新しい文字投稿を既存キューへ送れます。
+- **正確な受付・実行表示**：元投稿に 📨（キューへ保存済み）、🤔（対応するターンの開始確認済み）。完了・中断後はBot自身の 🤔 だけを外し、📨 は残します。
+- **重複実行を防止**：DiscordメッセージIDをSQLiteに保存し、重複配信や再起動時の二重受付を防ぎます。自分自身のBot投稿には反応しません。
+- **会話履歴を保持**：`retention.maxTurnsPerThread: 0` で既にミラーした会話と今後の返答を自動削除しません。
+- **過去履歴を取り込まない選択**：`startupBackfill.maxCodexMessages: 0` なら起動時の過去メッセージ・構造イベントを送らず、現在位置を確定できない場合も公開せずに止めます。
+- **Desktop互換性**：開始要求のIPC v2形式に対応。送信失敗時に別の経路へ勝手に再送しません。明示的に許可した既存会話は、更新日時が古くても接続対象になります。
+- **任意のローカルトークン入力画面**：チャットにトークンを貼らず、PC内の一時ページから `.env` へ保存できます。
 
-The bot mirrors live activity from Codex. Verbosity of mirrored messages can be tuned in `bridge.config.json`.
+プリセットの既定値は変えていません。通常投稿は無効、履歴保持は直近2ターンです。使う範囲と保存方針を設定してから起動してください。
 
-![Live mirroring](docs/images/how_it_looks_1.png)
+## セットアップ
 
-### Approval from Discord
+### 前提
 
-You can approve Codex command requests directly from Discord.
+- Windows、Node.js 24以上、Git
+- このPCでサインイン・動作確認済みのCodex DesktopまたはCodex CLI
+- 自分で管理する、閲覧者を限定したDiscordサーバーとBot
 
-![Approval](docs/images/how_it_looks_2.png)
-
-### Discord write-back to Codex
-
-Use the `/codex send` command to talk back to Codex via Discord. This supports starting a new turn, queueing, and steering in an existing thread.
-
-![Write-back](docs/images/how_it_looks_3.png)
-
-## Install
-
-### Prerequisites
-
-- Windows, or macOS as best-effort
-- Node.js 24+
-- Discord account and Discord app. The setup guide uses the Windows Discord app because copying IDs and tokens is easier there, but after setup the bot works from any device where you use Discord.
-- Codex Desktop (recommended) or Codex CLI already working on this machine
-- A local clone of this repo on the same machine where Codex runs.
-
-### Quick Guide
-
-For the most guided setup, open this project in Codex and say:
-
-```text
-Help me set up this project.
+```powershell
+git clone https://github.com/ymnshin/codex-mobile.git
+cd codex-mobile
+npm ci
+npm run build
 ```
 
-Codex should walk you through one setup step at a time, wait for each value or confirmation, run diagnostics, and then tell you how to start the bridge yourself.
+lockfileに固定した依存を新規導入します。install-scriptの承認を要求するnpm 12.1.0では、`package.json` の `allowScripts` が、SQLiteの `better-sqlite3@12.9.0` と開発用の `esbuild@0.27.7` だけを許可します。この承認方式でないnpmでは追加手順は不要です。依存更新時はスクリプトを再確認し、全パッケージの一括許可はしないでください。許可前に導入してnative依存が不足した場合は、対象を確認して `npm rebuild better-sqlite3 esbuild` で再構築できます。
 
-To use the terminal wizard instead:
+### Botと接続情報
 
-```sh
-npm install
-npm run init
+[English setup guideの画面付き手順](README.en.md#detailed-guide) に沿って、次を設定します。上流の `npm run init` ウィザードも利用できます。ウィザードと `npm run doctor` は権限確認のため一時カテゴリ・チャンネル・スレッド・投稿を作成し、削除します。
+
+1. 専用サーバーを用意し、DiscordのDeveloper ModeでサーバーIDを取得。
+2. [Developer Portal](https://discord.com/developers/applications) でアプリとBotを作成し、アプリIDを取得。
+3. `bot` と `applications.commands` のスコープでBotを招待。必要な権限は英語ガイドを参照し、Administratorを一括付与する運用は避けます。
+4. 操作する**自分のDiscordアカウントのユーザーID**を取得。アプリ所有者IDや表示名を代用しません。
+5. `.env.example` を `.env` にコピーし、接続情報をローカルで記入します。
+
+```dotenv
+DISCORD_BOT_TOKEN=<ローカルで記入するBotトークン>
+DISCORD_APPLICATION_ID=<アプリID>
+DISCORD_GUILD_ID=<専用サーバーID>
+DISCORD_CONTROLLER_USER_ID=<実際に投稿する本人のユーザーID>
+CODEX_COMMAND=codex
+CODEX_APP_SERVER_LISTEN_URL=stdio://
 ```
 
-The wizard will create `.env`, create `bridge.config.json`, verify the Discord bot permissions, and run diagnostics.
+Desktop中心なら、ウィザード実行**前**に `.env` の `CODEX_APP_SERVER_LISTEN_URL=stdio://` を設定しておくと、グローバルのCodex CLIランチャーを書き換えません。従来のローカルWebSocket設定では、Windows CLIを `--remote` で接続するためランチャーを調整します。`stdio://` ではそのCLI remote機能は使えません。詳しくは[英語ガイド](README.en.md#commands)を参照してください。
 
-Alternatively, you can manually follow the instructions below with screenshots.
+トークンはDiscord、Codexの会話、Issue、スクリーンショットに貼らないでください。入力が難しい場合は `.env` を作成後に次を実行できます。
 
-### Detailed Guide
+```powershell
+node scripts/token-entry.mjs
+```
 
-The terminal wizard and Codex-assisted setup follow this same flow.
+表示された `http://127.0.0.1:.../` を**同じPC**のブラウザーで開いて入力します。保存先はこのリポジトリの `.env` のBotトークンだけで、他の設定を保持します。サービスは保存後または15分後に終了します。外部APIには送信せず、Botも起動しません。`.env` 自体は暗号化されないためPCのアカウント・ファイル権限で保護してください。
 
-1. Create or choose a Discord server.
+### 起動前に対象の会話を限定する
 
-   In Discord, use the `+` button in the server sidebar to create a server if you do not already have one for the bridge.
+`bridge.config.json` を作成します。以下の `YOUR_CODEX_THREAD_ID` は実際のCodex会話IDへ置き換えてください。空の `allowedThreadIds` は全体の自動探索を許可するため、この例を意図なく空にしないでください。
 
-   <p>
-      <img src="docs/images/detailed_guide_1_1.png" alt="Create server step 1" width="30%">
-      <img src="docs/images/detailed_guide_1_2.png" alt="Create server step 2" width="30%" style="margin-left: 2%; margin-right: 2%;">
-      <img src="docs/images/detailed_guide_1_3.png" alt="Create server step 3" width="30%">
-   </p>
+```json
+{
+  "preset": "recommended",
+  "discovery": { "allowedThreadIds": ["YOUR_CODEX_THREAD_ID"] },
+  "messageWriteBacks": { "plainTextChannelIds": [] },
+  "visibility": {
+    "userMessages": true,
+    "thinkingMessages": false,
+    "finalMessages": true,
+    "commands": false,
+    "fileEdits": false
+  },
+  "startupBackfill": { "maxCodexMessages": 0 },
+  "retention": { "maxTurnsPerThread": 0 }
+}
+```
 
-2. Enable Developer Mode and copy the server ID.
+会話IDはCodexの会話URLなどで確認できます。ローカルの `npm run inspect:codex` も利用できますが、出力には個人の会話情報が含まれ得るため公開しないでください。
 
-   In Discord, turn on Developer Mode from `User Settings -> Developer -> Developer Mode`, or `User Settings -> Advanced -> Developer Mode`. Then right-click your server and copy the server ID. This value becomes `DISCORD_GUILD_ID` in `.env`.
+### 開始・停止
 
-   <p>
-      <img src="docs/images/detailed_guide_2_1.png" alt="Discord Developer Mode" width="70%" style="margin-right: 5%;">
-      <img src="docs/images/detailed_guide_2_2.png" alt="Discord Server ID" width="20%">
-   </p>
-
-3. Create or open the Discord application.
-
-   Open the [Discord Developer Portal](https://discord.com/developers/applications). If Discord asks what you are building, choose `Build a Bot`. Create an application named something like `Codex Mobile Bridge`, or open your existing bridge application.
-
-   ![Discord Developer Portal application page, step 1](docs/images/detailed_guide_3_1.png)
-   ![Discord Developer Portal application page, step 2](docs/images/detailed_guide_3_2.png)
-
-4. Copy the application ID.
-
-   On `General Information`, copy the `Application ID`. This value becomes `DISCORD_APPLICATION_ID` in `.env`.
-
-   ![Discord application ID](docs/images/detailed_guide_4_1.png)
-
-5. Create or confirm the bot.
-
-   Open the `Bot` page in the left sidebar. Click `Add Bot` if Discord asks; if the bot already exists, continue.
-
-6. Configure server install permissions.
-
-   Open the `Installation` page. Make sure server installs are enabled.
-
-   Required server install scopes:
-
-   - `applications.commands`
-   - `bot`
-
-   Required bot permissions:
-
-   - `Create Public Threads`
-   - `Manage Channels`
-   - `Manage Messages`
-   - `Manage Threads`
-   - `Pin Messages`
-   - `Read Message History`
-   - `Send Messages`
-   - `Send Messages in Threads`
-   - `View Channels`
-
-   Keep `Requires OAuth2 Code Grant` off.
-
-   ![Discord Developer Portal Installation page with required scopes and permissions](docs/images/detailed_guide_6_1.png)
-
-7. Copy the bot token.
-
-   On the `Bot` page, use `Reset Token` or `Copy` to get the bot token. This value becomes `DISCORD_BOT_TOKEN` in `.env`.
-
-   ![Discord bot token controls](docs/images/detailed_guide_7_1.png)
-
-8. Invite the bot to your server.
-
-   The wizard generates the invite URL from your application ID. If you are following the README by hand, use this format and replace `<DISCORD_APPLICATION_ID>` with your application ID:
-
-   ```text
-   https://discord.com/oauth2/authorize?client_id=<DISCORD_APPLICATION_ID>&scope=bot%20applications.commands&permissions=2252126231276560&integration_type=0
-   ```
-
-   Open the URL, choose the server you created or selected earlier, approve the requested permissions, and authorize the bot. The server ID is not part of the URL; Discord asks you to choose the server on the invite page.
-
-   <p>
-      <img src="docs/images/detailed_guide_8_1.png" alt="Discord Bot Invite 1" width="50%" style="margin-right: 5%;">
-      <img src="docs/images/detailed_guide_8_2.png" alt="Discord Bot Invite 2" width="35%">
-   </p>
-
-9. Verify bot permissions.
-
-   The wizard checks the bot's role and creates a temporary category, channel, and thread to confirm the bot can run the bridge. It removes those temporary resources afterward. If you are following the README by hand, you will verify this later with `npm run doctor`.
-
-10. Copy the controller user ID.
-
-    Right-click your own Discord profile and copy your user ID. This one user can approve actions and use `/codex send` in mapped channels. This value becomes `DISCORD_CONTROLLER_USER_ID` in `.env`.
-
-    ![copy controller user ID](docs/images/detailed_guide_10_1.png)
-
-11. Choose a behavior preset.
-
-    Use `recommended` unless you want less or more Discord output:
-
-    - `basic`: mirrors conversation, grouped command/file activity, and approval responses, without Discord message write-back
-    - `recommended`: everything in `basic`, plus `/codex send`, queue/retract, and steering write-back
-    - `full`: everything in `recommended`, plus ungrouped command/file activity and detail buttons
-
-    See [bridge.config.example.jsonc](bridge.config.example.jsonc) for an explained example of the available customization settings.
-    After choosing your preset, you will save it in the next step.
-
-12. Save `.env` and `bridge.config.json`.
-
-    If you are using the wizard, it writes these files for you. If you are following the README by hand, create `.env` from [`.env.example`](.env.example), then fill in:
-
-    ```env
-    DISCORD_BOT_TOKEN=<bot token>
-    DISCORD_APPLICATION_ID=<application ID>
-    DISCORD_GUILD_ID=<server ID>
-    DISCORD_CONTROLLER_USER_ID=<your Discord user ID>
-    ```
-
-    Then create `bridge.config.json` with the recommended preset:
-
-    ```json
-    {
-      "preset": "recommended"
-    }
-    ```
-
-    Use [bridge.config.example.jsonc](bridge.config.example.jsonc) only if you want to see all available options.
-
-13. Run diagnostics.
-
-    The wizard runs diagnostics automatically. You can rerun them any time:
-
-    ```sh
-    npm run doctor
-    ```
-
-    ![successful doctor run](docs/images/detailed_guide_13_1.png)
-
-### Start The Bridge
-
-When setup passes, start the bridge yourself:
-
-```sh
+```powershell
+npm run doctor
 npm start
 ```
 
-If you use Codex Desktop, the recommended path is to add this project to the app, open a chat for this project, and run `npm start` there while you work in other Codex projects.
+作成された専用会話チャンネルで、設定した本人が `/codex send text:...` を使えます。停止は起動したターミナルで `Ctrl+C`。Windowsの自動起動やサービスは登録しません。設定変更後は停止して再起動します。同じ設定・データベースで二重起動しないでください。
 
-It is recommended to clean the bot's state after stopping the bridge, to avoid leaving sensitive data on discord. To clean, use `/codex cleanall` from discord, or run:
+## 通常投稿で会話する
 
-```sh
-npm run clean
+最初に `/codex send` の送受信と、接続された会話を確認してください。その後、次の順序で有効化します。
+
+1. Developer PortalのBot設定で **Message Content Intent** をONにします。通常投稿の本文を読むための権限で、スラッシュコマンドだけなら不要です。[Discord公式説明](https://docs.discord.com/developers/events/gateway#message-content-intent)
+2. Botにそのチャンネルの **View Channel / Send Messages / Read Message History / Add Reactions** を許可します。リアクションはBot自身のものだけを更新します。[Discord公式説明](https://docs.discord.com/developers/resources/message#create-reaction)
+3. Botが作成した**専用の通常テキストチャンネルID**を、既存の `messageWriteBacks` 内に追加して再起動します。以下はダミーIDです。
+
+```json
+"messageWriteBacks": {
+  "plainTextChannelIds": ["1111111111111111111"]
+}
 ```
 
-## How It Works In Practice
+`discovery.allowedThreadIds` に明示的に登録された会話との対応も必要です。一般チャンネルや他のタスクを勝手に対象にする設定ではありません。
 
-This is not Discord talking directly to your Codex or OpenAI account.
+- 本人の**新しい文字投稿**だけがキューに入り、今実行中のターンは中断しません。
+- 他のユーザー、Bot、Webhook、システム投稿、DM、他サーバー、許可外チャンネル、子スレッド、編集、過去投稿は受け付けません。
+- 添付・スタンプを含む投稿は転送せず、文字だけで送り直す案内を返します。ファイルを自動ダウンロードしません。
+- 📨 は永続キューへの受付済み。🤔 はその投稿に対応するターンの開始が確認できた場合のみ付きます。表示はベストエフォートで、権限不足・削除済み投稿・API障害でも指示の処理を止めません。
+- 完了時はBot自身の 🤔 を外します。起動前の投稿への反応をまとめて再生しません。開始・完了のイベントを失った場合やAPI失敗時、表示が残る場合があります。
+- `/codex send` は引き続き使えます。失敗した通常投稿は自動再送しません。再試行したい場合は、新しい投稿として送ってください。
 
-The actual flow is:
+無効化は `plainTextChannelIds` を空配列に戻して再起動します。
 
-1. Codex Desktop or Codex CLI is already authenticated on your machine.
-2. `codex-mobile` starts locally on that same machine.
-3. The bridge connects to Codex locally through supported local surfaces.
-4. The bridge mirrors selected activity into Discord.
-5. When a supported approval appears, Discord buttons send that exact decision back through the local bridge.
+## 履歴を残す設定と、過去履歴の公開は別
 
-### Discord
+| 設定 | `0` の意味 | プリセット既定値 |
+| --- | --- | --- |
+| `retention.maxTurnsPerThread` | 既存・今後のミラー済み会話をターン数で自動削除しない | `2`：直近2ターンだけ残す |
+| `startupBackfill.maxCodexMessages` | 起動時に過去のCodex履歴を取り込まない | `20` |
 
-The Discord layout mirrors Codex work:
+上の設定例は「昔の会話を新たに公開せず、これからの対話を残す」組み合わせです。無期限保持では保存量も増えます。既に削除されたDiscord投稿は復元しません。ステータスカード・承認カードは従来どおり更新・期限切れ処理を行います。
 
-- Discord server = one bridge instance / Codex account context
-- category = project or environment
-- text channel = top-level Codex thread
-- Discord thread = Codex sub-agent or sub-thread
+**履歴を残したい場合、停止のたびにcleanしないでください。** `npm run clean`、`/codex cleanid`、`/codex cleanall` は明示的な削除操作です。チャンネルの手動削除や複数会話運用時のチャンネル数上限などから保護するバックアップ機能ではありません。
 
-The bridge can mirror final answers, thinking/commentary, user messages, command activity, file-edit activity, and approval requests. Visibility is controlled by `bridge.config.json`.
+## 安全性と確認範囲
 
-Approval and plan-response buttons work only for exact Codex requests the bridge can route back into Codex:
+- **自分専用の非公開サーバーを推奨。** 操作のallowlistは、チャンネルを閲覧できる人を制限しません。Discordへ送った本文はPCの外へ出ます。
+- Codexの権限・承認を回避しません。設定した本人からの入力はCodexに作業を依頼できるため、そのDiscordアカウントとPCを保護してください。
+- `.env`、実運用の `bridge.config.json`、SQLite、ログ、会話履歴、認証ファイルをGitへ追加しないでください。秘密のマスクはベストエフォートです。
+- Windowsでのローカル動作とテストを確認した実験的実装です。macOSのDesktop連携・Linux・マルチユーザー運用は、このforkでは未検証です。
+- [Codex app-server](https://learn.chatgpt.com/docs/app-server) は公式の統合用インターフェースですが、**Desktop会話を操作する内部IPCとセッションログ形式は安定APIではありません**。Desktop更新で壊れる可能性があります。開始要求はv2形式を使用し、旧形式や別app-serverへの自動フォールバックはしません。
+- 反応や返答の表示だけで、あらゆる承認経路の実機検証済みとは判断しないでください。重要な操作はPC側でも確認してください。
 
-- Codex Desktop top-level approvals are actionable when Desktop exposes the native request.
-- Codex Desktop sub-agent approvals may appear read-only until the sub-agent chat is opened in Desktop. In that state, the bridge has only a session-log placeholder and no write-back-capable request.
-- Windows Codex CLI approvals are actionable when the CLI session is connected to the bridge listener. In practice, start the bridge first, then launch Codex CLI with the standard `codex` command. The Windows launcher will transparently run that CLI session with `--remote` so the bridge can route approvals and `/codex send` controls back into the live terminal. If the bridge only sees a local session log, CLI controls remain read-only.
+詳細は [SECURITY.md](SECURITY.md)。機密情報を含むログや脆弱性の詳細を公開Issueに貼らないでください。
 
-The configured controller user can also use:
+## 開発・テスト
 
-- `/codex send` to send, queue, or steer a message in a mapped Discord location
-- `/codex retract` to retract the latest pending queued Discord write-back message
-
-Ambient Discord chat messages are ignored.
-
-## Safety Model
-
-Discord is treated as semi-trusted. The bridge keeps Codex local and fails closed when state is ambiguous.
-
-Current rules:
-
-- approvals are bound to exact surfaced requests only
-- no arbitrary "run command from Discord" path exists
-- Discord write-back works only through explicit slash commands in mapped bridge locations
-- steering targets only a known active Codex turn
-- allowlists are enforced by the local bridge
-- secrets are redacted before text is posted to Discord
-- detailed command views are opt-in and still redacted
-- stale or resolved approval buttons are disabled
-- audit entries are kept locally in SQLite
-
-See [SECURITY.md](SECURITY.md) for security notes and reporting guidance.
-
-## Configuration
-
-Connection values and local IDs stay in `.env`. Behavior lives in `bridge.config.json`, generated by the init wizard. The commented reference is [bridge.config.example.jsonc](bridge.config.example.jsonc), and the preset defaults live in [config/presets](config/presets).
-
-Important files:
-
-- `.env`: bot token, application ID, server ID, controller user ID, Codex command, store path, log level, optional Desktop overrides
-- `bridge.config.json`: behavior preset plus any local overrides
-- `config/presets/*.json`: source-of-truth defaults for `basic`, `recommended`, and `full`
-
-Behavior presets:
-
-- `basic`: mirrors conversation, thinking/commentary, grouped command/file activity, and approval responses
-- `recommended`: everything in `basic`, plus Discord message write-back for `/codex send`, queue/retract, and steering
-- `full`: everything in `recommended`, but command/file activity is ungrouped with detail buttons
-
-The preset is the base. Any sections you add below `preset` in `bridge.config.json` override that preset for your local bridge.
-
-Useful knobs include:
-
-- `approvals.allowFromDiscord`: command/MCP/tool approvals and proposed-plan accept/feedback
-- `DISCORD_CONTROLLER_USER_ID` in `.env`: the single Discord controller user allowed to approve actions and use write-back controls
-- `messageWriteBacks.allowFromDiscord`: `/codex send`, queue/retract, and steering
-- `visibility.userMessages`
-- `visibility.thinkingMessages`
-- `visibility.finalMessages`
-- `visibility.commands`
-- `visibility.fileEdits`
-- `ui.commandDisplayMode`
-- `ui.enableCommandDetails`
-
-## Commands
-
-Common commands:
-
-| Command                                    | Purpose                                                        |
-| ------------------------------------------ | -------------------------------------------------------------- |
-| `npm run init`                             | guided setup wizard                                            |
-| `npm run doctor`                           | diagnostics                                                    |
-| `npm start`                                | start the bridge                                               |
-| `npm run dev`                              | development start                                              |
-| `npm run inspect`                          | general bridge inspection                                      |
-| `npm run inspect:discord`                  | inspect Discord mappings                                       |
-| `npm run inspect:codex`                    | inspect Codex discovery                                        |
-| `npm run inspect:desktop`                  | inspect recent Desktop approval/question events                |
-| `npm run inspect:store`                    | inspect local bridge state                                     |
-| `npm run inspect:thread -- <thread-id> 20` | inspect one Codex thread                                       |
-| `npm run clean`                            | delete bridge-managed Discord structure and local bridge state |
-| `npm run build`                            | compile                                                        |
-| `npm test`                                 | run tests                                                      |
-| `npm run coverage`                         | test coverage summary                                          |
-| `npm run coverage:gate`                    | current coverage gate                                          |
-
-To launch Codex CLI through the project helper:
-
-```sh
-npm run cli -- -C /path/to/workspace
-```
-
-This is optional. On Windows, setup also reconciles the standard `codex` launcher. When the bridge is already running, ordinary `codex` terminals are transparently launched with `--remote` and can receive supported approvals and `/codex send` controls from Discord. Start the bridge before starting the CLI session you want to control.
-
-Live e2e playbooks live in [e2e-live](e2e-live). Start with:
-
-```sh
-npm run e2e-live -- groups
-```
-
-## Troubleshooting
-
-### Unknown Server
-
-- make sure the bot was installed into the intended server
-- make sure the bot token and application ID belong to the same Discord application
-- rerun `npm run doctor`
-
-### The bot shows in Integrations but not in the member list
-
-That can still be okay while it is offline. The real check is whether `npm run doctor` and `npm start` can connect successfully.
-
-### Approvals appear in Codex Desktop but not in Discord
-
-- check `npm run inspect:desktop`
-- check `npm run inspect:thread -- <thread-id>`
-- confirm the bridge is running on the same machine as Codex Desktop
-- confirm the approval surface is one the bridge currently supports
-
-### Sub-agent approvals are read-only in Discord
-
-For Codex Desktop, a sub-agent approval may stay read-only until the sub-agent chat is opened in Desktop. Until Desktop exposes the native approval request, the bridge may only see a session-log placeholder, which cannot be approved from Discord.
-
-For Codex CLI, read-only approval cards mean the bridge saw a session-log placeholder but did not receive a routable native approval request for that turn. Use the standard `codex` command on Windows while the bridge is running.
-
-### The bridge starts but creates nothing
-
-- run `npm run inspect:codex`
-- verify Codex threads are being returned
-- verify your startup/backfill behavior preset is not intentionally quiet
-
-### Windows PowerShell shows a `CMD.EXE was started with the above path as the current directory` warning
-
-If your PowerShell prompt shows a provider-style path such as `Microsoft.PowerShell.Core\FileSystem::\\?\C:\...`, `npm` may print a one-line `CMD.EXE` warning before the bridge starts. The repo scripts normalize back to the actual project root, so this warning is usually harmless as long as the bridge continues starting afterward.
-
-### Discord message history looks noisy
-
-The recommended default is the `recommended` preset. Use `basic` to disable Discord-originated messages, or `full` when you want ungrouped command/file activity.
-
-## Public Beta Expectations
-
-Use this release if you want:
-
-- mobile visibility into Codex work
-- Discord-based approvals for supported approval surfaces
-- a local-first bridge with explicit safety controls
-
-Do not use this release if you need:
-
-- multi-user enterprise hardening
-- fully validated macOS Desktop integration
-- guaranteed support for every internal Codex approval surface
-- chat-originated arbitrary control from Discord
-
-Feedback and bug reports are welcome through GitHub Issues. External pull requests are not being accepted during the public beta; unsolicited PRs may be closed without review.
-
-For security issues, do not open a public issue. Follow [SECURITY.md](SECURITY.md).
-
-## Development
-
-Run the full test suite:
-
-```sh
+```powershell
+npm ci
+npm run build
+npm run check
 npm test
+node --test scripts/token-entry.test.mjs
 ```
 
-Current layout:
+通常投稿の拒否条件とID重複、キュー・開始の分離、正しい元投稿だけへの反応、再起動、履歴保持、過去履歴非公開、IPCリクエスト形式を自動テストします。実際のDiscord送受信はBotと本人の入力による別の実機確認です。テストは本番トークンや実運用IDを使いません。
 
-- `src/bridge`: orchestration and mirror/approval logic
-- `src/codex`: Codex app-server, Desktop IPC, and local session integration
-- `src/providers`: provider-facing contract
-- `src/providers/discord`: Discord provider entry point
-- `src/discord`: current Discord implementation details
+GitHub Actionsは上流同様に手動実行のみです。自動CIが通ったことを示すバッジや保証は付けていません。
 
-Project hygiene:
+公開準備時のローカル検証：Windows / Node.js 24.19.0 / npm 12.1.0の新規依存導入で、build・typecheck・全459テスト・トークン入力4テストが成功しました。`npm test` は集計後に終了まで少し待つ場合がありますが、強制終了せずexit 0を確認しています。ファイル別の `node --test --test-concurrency=4 "dist/test/*.test.js"` も全459件成功・自然終了を確認しました。これはその環境の検証結果で、他のPCや将来のDesktop版を保証しません。
 
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-- [RELEASING.md](RELEASING.md)
+## 出典・ライセンス
+
+- 上流：[NathanZane/codex-mobile](https://github.com/NathanZane/codex-mobile)
+- ベース：[`f79e6807ca0b9d6052afd24f822ee41b9a52e07d`](https://github.com/NathanZane/codex-mobile/commit/f79e6807ca0b9d6052afd24f822ee41b9a52e07d)（Initial public beta）
+- このfork：[ymnshin/codex-mobile](https://github.com/ymnshin/codex-mobile)
+- [MIT License](LICENSE) — 上流の著作権表示 `Copyright (c) 2026 Natale and contributors` を保持しています。上流のスクリーンショットも英語ガイドに残しています。
+
+上流の公開betaは外部PRを受け付けていません。このforkは独立した改善版で、上流作者へのPRは行いません。fork固有の不具合は[このリポジトリのIssues](https://github.com/ymnshin/codex-mobile/issues)へ、再現手順と秘密を除いた情報だけを報告してください。

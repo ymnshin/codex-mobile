@@ -6,6 +6,9 @@ import type { Logger } from "../logger.js";
 import { resolveDesktopIpcPath } from "../platform.js";
 import { withLogScope } from "../util/terminalLogging.js";
 const REQUEST_VERSION = 1;
+// Desktop 26.911 uses a request/context envelope for start-turn (IPC v2).
+// Other follower methods retain their own v1 wire contracts.
+const START_TURN_REQUEST_VERSION = 2;
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const START_REQUEST_TIMEOUT_MS = 30_000;
 const STEER_REQUEST_TIMEOUT_MS = 30_000;
@@ -287,11 +290,15 @@ export class CodexDesktopIpcClient extends EventEmitter {
     turnStartParams: Record<string, unknown>
   ): Promise<unknown> {
     const targetClientId = this.ownerClientIdsByThread.get(conversationId) ?? null;
+    const { attachments = [], ...request } = turnStartParams;
     return this.sendThreadFollowerRequest(
       "thread-follower-start-turn",
       {
         conversationId,
-        turnStartParams
+        turnStart: {
+          request: { ...request, threadId: conversationId },
+          context: { attachments }
+        }
       },
       {
         timeoutMs: START_REQUEST_TIMEOUT_MS,
@@ -763,7 +770,7 @@ export class CodexDesktopIpcClient extends EventEmitter {
     overrides: { timeoutMs?: number; targetClientId?: string } = {}
   ): Promise<unknown> {
     return this.sendFrame(method, params, {
-      version: REQUEST_VERSION,
+      version: method === "thread-follower-start-turn" ? START_TURN_REQUEST_VERSION : REQUEST_VERSION,
       ...(overrides.timeoutMs !== undefined ? { timeoutMs: overrides.timeoutMs } : {}),
       ...(overrides.targetClientId ? { targetClientId: overrides.targetClientId } : {})
     });

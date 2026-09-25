@@ -70,6 +70,7 @@ interface NotificationRouterDependencies {
     turnCursor?: string | null
   ): boolean;
   drainWriteBackQueue(threadId: string): Promise<void>;
+  finishDiscordInputTurn(threadId: string, turnId: string): Promise<void>;
   enforceTurnRetention(threadId: string): Promise<void>;
   enqueueThreadEvent(threadId: string, work: () => Promise<void>): Promise<void>;
   extractAssistantMessage(item: CodexItem): { text: string; phase: string | null } | null;
@@ -373,6 +374,9 @@ export class NotificationRouter {
         break;
       }
       case "turn/completed":
+        if (typeof notification.params.threadId === "string") {
+          await this.deps.finishDiscordInputTurn(notification.params.threadId, String(notification.params.turn.id));
+        }
         await this.handleTurnCompleted(
           String(notification.params.turn.id),
           String(notification.params.turn.status)
@@ -758,6 +762,7 @@ export class NotificationRouter {
       return;
     }
     markThreadTurnCompleted(state, turnStatus);
+    await this.deps.finishDiscordInputTurn(state.threadId, turnId);
     this.deps.updateStateLastActivityAt(state, null);
     this.deps.persistThreadState(state);
     this.deps.queueStatusUpdate(state.threadId);

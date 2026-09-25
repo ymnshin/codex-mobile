@@ -246,19 +246,25 @@ export class MirrorSyncCoordinator {
     this.context.logger.info({ startupTiming: true }, message);
   }
 
-  async seedMirrorCursorFromStableFrontier(threadId: string): Promise<boolean> {
+  async seedMirrorCursorFromStableFrontier(threadId: string, includeActiveTurn = false): Promise<boolean> {
+    if (includeActiveTurn) this.runtime.unseededNoHistoryThreads.add(threadId);
     try {
       const details = await this.context.codexAdapter.readThread(threadId, true);
       const turns = Array.isArray(details.turns) ? details.turns : [];
       const syncableTurns = this.deps.selectRecentSyncableTurns(threadId, turns);
       const latestTurn = syncableTurns.at(-1);
       const latestTurnInProgress = latestTurn ? this.deps.extractTurnStatus(latestTurn) === "inProgress" : false;
-      const seedTurns = latestTurnInProgress ? this.deps.selectRecentCompletedTurns(turns) : syncableTurns;
+      const seedTurns = latestTurnInProgress && !includeActiveTurn ? this.deps.selectRecentCompletedTurns(turns) : syncableTurns;
       const seedSourceTurns = seedTurns.length > 0 ? [seedTurns[seedTurns.length - 1]!] : turns;
       const seedCandidates = this.deps.collectMirrorCandidates(threadId, seedSourceTurns);
       const latestCandidate = seedCandidates.at(-1);
       if (!latestCandidate?.cursor) {
+        if (includeActiveTurn && seedCandidates.length === 0) this.runtime.unseededNoHistoryThreads.delete(threadId);
         return false;
+      }
+      if (includeActiveTurn) {
+        this.runtime.startupMirrorFloorByThread.set(threadId, latestCandidate.cursor);
+        this.runtime.unseededNoHistoryThreads.delete(threadId);
       }
       this.deps.rememberThreadMirrorCursor(
         threadId,

@@ -36,10 +36,12 @@ export interface BridgeApprovalsConfig {
 export interface BridgeMessageWriteBackConfig {
   allowFromDiscord: boolean;
   allowedUserIds: string[];
+  plainTextChannelIds?: string[];
 }
 
 type BridgeMessageWriteBackConfigInput = {
   allowFromDiscord?: boolean | undefined;
+  plainTextChannelIds?: string[] | undefined;
 };
 
 export interface BridgeUiConfig {
@@ -69,6 +71,7 @@ export interface BridgeStartupBackfillConfig {
 }
 
 export interface BridgeRetentionConfig {
+  /** Zero disables automatic turn pruning; positive values keep only the latest N turns. */
   maxTurnsPerThread: number;
 }
 
@@ -142,7 +145,8 @@ const bridgeConfigSchema = z
       .optional(),
     messageWriteBacks: z
       .object({
-        allowFromDiscord: z.boolean().optional()
+        allowFromDiscord: z.boolean().optional(),
+        plainTextChannelIds: z.array(z.string().trim().regex(/^\d{17,20}$/)).optional()
       })
       .strict()
       .optional(),
@@ -166,7 +170,7 @@ const bridgeConfigSchema = z
       .optional(),
     retention: z
       .object({
-        maxTurnsPerThread: z.coerce.number().int().min(1).max(20).optional()
+        maxTurnsPerThread: z.coerce.number().int().min(0).max(20).optional()
       })
       .strict()
       .optional(),
@@ -228,7 +232,7 @@ const presetDefaultsSchema: z.ZodType<BridgePresetDefaults> = z
       .strict(),
     retention: z
       .object({
-        maxTurnsPerThread: z.number().int().min(1).max(20)
+        maxTurnsPerThread: z.number().int().min(0).max(20)
       })
       .strict(),
     ui: z
@@ -507,7 +511,10 @@ function resolveMessageWriteBackConfig(
   const allowFromDiscord = overrides?.allowFromDiscord ?? defaults.allowFromDiscord;
   return {
     allowFromDiscord,
-    allowedUserIds: approvals.allowedUserIds
+    allowedUserIds: approvals.allowedUserIds,
+    ...(overrides?.plainTextChannelIds?.length
+      ? { plainTextChannelIds: normalizeIdList(overrides.plainTextChannelIds) }
+      : {})
   };
 }
 

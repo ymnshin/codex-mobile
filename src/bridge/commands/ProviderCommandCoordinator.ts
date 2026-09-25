@@ -58,6 +58,8 @@ interface ProviderCommandCoordinatorDependencies {
 
 export class ProviderCommandCoordinator {
   private readonly desktopSteerPayload: DesktopSteerPayloadBuilder;
+  private readonly startingWriteBackThreads = new Set<string>();
+  private readonly completedDuringWriteBackStarts = new Map<string, Set<string>>();
 
   constructor(
     private readonly context: BridgeRuntimeContext,
@@ -120,7 +122,8 @@ export class ProviderCommandCoordinator {
     actor: ProviderActorContext,
     channelId: string,
     text: string,
-    mode: "queue" | "steer"
+    mode: "queue" | "steer",
+    sourceDiscordMessageId?: string
   ): Promise<DiscordCommandResult> {
     const unauthorizedResult = this.authorizeMessageWriteBack(actor);
     if (unauthorizedResult) {
@@ -130,6 +133,13 @@ export class ProviderCommandCoordinator {
     const target = this.resolveMappedThreadFromChannel(channelId);
     if (!target.ok) {
       return target.result;
+    }
+    if (sourceDiscordMessageId && (
+      mode !== "queue" || !/^\d{17,20}$/.test(sourceDiscordMessageId) ||
+      !this.context.runtimeConfig.messageWriteBacks.plainTextChannelIds?.includes(channelId) ||
+      !this.context.runtimeConfig.discovery.allowedThreadIds.includes(target.bridge.codexThreadId)
+    )) {
+      return { content: "Plain-text input is not enabled for this mapped conversation.", ephemeral: true };
     }
 
     const trimmedText = text.trim();
@@ -142,7 +152,7 @@ export class ProviderCommandCoordinator {
       return this.handleSteerWriteBack(actor, target.bridge, trimmedText);
     }
 
-    return this.handleQueueWriteBack(actor, target.bridge, trimmedText);
+    return this.handleQueueWriteBack(actor, target.bridge, trimmedText, sourceDiscordMessageId);
   }
 
   async handleRetractCommand(
@@ -277,7 +287,7 @@ export class ProviderCommandCoordinator {
     threadId: string,
     options: WriteBackTurnStartOptions = {}
   ): Promise<WriteBackQueueRecord | null> {
-    if (this.isThreadBusy(threadId)) {
+    if (this.isThreadBusy(threadId) || this.startingWriteBackThreads.has(threadId)) {
       return null;
     }
 
@@ -285,13 +295,15 @@ export class ProviderCommandCoordinator {
     if (!claimed) {
       return null;
     }
+    this.startingWriteBackThreads.add(threadId);
 
     try {
-      await this.startWriteBackTurn(claimed.threadId, claimed.text, options);
-      this.markWriteBackTurnStarted(claimed.threadId);
+      const startedTurn = await this.startWriteBackTurn(claimed.threadId, claimed.text, options, claimed.id);
+      if (!startedTurn?.alreadyCompleted) this.markWriteBackTurnStarted(claimed.threadId, startedTurn?.turnId);
       this.context.stateStore.markWriteBackQueueItemSent(claimed.id);
       const sent = this.context.stateStore.getWriteBackQueueItem(claimed.id) ?? claimed;
       this.appendWriteBackCanonicalEvent(sent, "writeBackSent", "Started new Codex turn from queued Discord message.");
+      if (startedTurn?.inProgress && !startedTurn.alreadyCompleted) await this.reactToDiscordInput(sent, "🤔", true);
       return sent;
     } catch (error) {
       const errorMessage = this.formatErrorMessage(error, "Failed to start Codex turn from queued Discord message.");
@@ -310,14 +322,45 @@ export class ProviderCommandCoordinator {
         status: "failed",
         error: errorMessage
       };
+    } finally {
+      this.startingWriteBackThreads.delete(threadId);
+    }
+  }
+
+  async finishDiscordInputTurn(threadId: string, turnId: string): Promise<void> {
+    this.completedDuringWriteBackStarts.get(threadId)?.add(turnId);
+    for (const record of this.context.stateStore.listDiscordMessageQueueItemsForTurn(threadId, turnId)) {
+      await this.reactToDiscordInput(record, "🤔", false);
+    }
+  }
+
+  private async reactToDiscordInput(record: WriteBackQueueRecord, reaction: "📨" | "🤔", present: boolean): Promise<void> {
+    const config = this.context.runtimeConfig;
+    const bridge = this.context.stateStore.getThreadBridge(record.threadId);
+    if (!this.context.provider.setInputReaction || !config.messageWriteBacks.allowFromDiscord ||
+        !config.messageWriteBacks.allowedUserIds.includes(record.actorUserId) ||
+        !config.messageWriteBacks.plainTextChannelIds?.includes(record.discordChannelId) ||
+        !config.discovery.allowedThreadIds.includes(record.threadId) ||
+        bridge?.discordChannelId !== record.discordChannelId) return;
+    const messageId = this.context.stateStore.getDiscordMessageIdForQueueItem(record.id);
+    if (!messageId) return;
+    if (reaction === "🤔" && !this.context.stateStore.claimDiscordInputThinkingReaction(record.id, present)) return;
+    try {
+      await this.context.provider.setInputReaction(record.discordChannelId, messageId, reaction, present);
+    } catch {
+      this.context.logger.warn({ queueId: record.id, reaction, present }, "Input reaction unavailable; write-back processing continues.");
     }
   }
 
   private async handleQueueWriteBack(
     actor: ProviderActorContext,
     bridge: ThreadBridgeRecord,
-    trimmedText: string
+    trimmedText: string,
+    sourceDiscordMessageId?: string
   ): Promise<DiscordCommandResult> {
+    if (sourceDiscordMessageId && this.context.stateStore.hasDiscordMessageInput(sourceDiscordMessageId)) {
+      return { content: "", ephemeral: true };
+    }
     const pendingBefore = this.context.stateStore.countPendingWriteBackQueueItems(bridge.codexThreadId);
     if (pendingBefore >= WRITE_BACK_MAX_PENDING_PER_THREAD) {
       return {
@@ -326,13 +369,18 @@ export class ProviderCommandCoordinator {
       };
     }
 
-    const queued = this.context.stateStore.createWriteBackQueueItem({
+    const input = {
       threadId: bridge.codexThreadId,
       discordChannelId: bridge.discordChannelId,
       actorUserId: actor.userId,
       text: trimmedText
-    });
+    };
+    const queued = sourceDiscordMessageId
+      ? this.context.stateStore.createDiscordMessageQueueItemOnce(sourceDiscordMessageId, input)
+      : this.context.stateStore.createWriteBackQueueItem(input);
+    if (!queued) return { content: "", ephemeral: true };
     this.appendWriteBackCanonicalEvent(queued, "writeBackQueued", "Queued Discord message for Codex.");
+    await this.reactToDiscordInput(queued, "📨", true);
 
     const busy = this.isThreadBusy(bridge.codexThreadId);
     if (!busy) {
@@ -722,13 +770,13 @@ export class ProviderCommandCoordinator {
     }
   }
 
-  private markWriteBackTurnStarted(threadId: string): void {
+  private markWriteBackTurnStarted(threadId: string, turnId?: string): void {
     const state = this.runtime.threadState.get(threadId);
     if (!state) {
       return;
     }
-    state.lastTurnId = null;
-    markThreadTurnInProgress(state, null);
+    state.lastTurnId = turnId ?? null;
+    markThreadTurnInProgress(state, turnId ?? null);
     this.deps.persistThreadState(state);
     this.deps.queueStatusUpdate(threadId);
   }
@@ -801,38 +849,50 @@ export class ProviderCommandCoordinator {
   private async startWriteBackTurn(
     threadId: string,
     text: string,
-    options: WriteBackTurnStartOptions = {}
-  ): Promise<void> {
+    options: WriteBackTurnStartOptions = {},
+    queueId?: number
+  ): Promise<{ turnId: string; inProgress: boolean; alreadyCompleted: boolean } | null> {
     const sourceKind =
       this.runtime.threadState.get(threadId)?.sourceKind ??
       this.context.stateStore.getThreadBridge(threadId)?.sourceKind ??
       "app-server";
     if (sourceKind === "cli-session" && options.skipResumeForCliSession) {
       await this.context.codexAdapter.startTurn(threadId, text);
-      return;
+      return null;
     }
 
     if (sourceKind === "app-server" && (await this.isBridgeRemoteCliThread(threadId))) {
       await this.context.codexAdapter.startTurn(threadId, text);
-      return;
+      return null;
     }
 
     const desktopIpcClient = this.context.desktopIpcClient;
     if (sourceKind !== "cli-session" && desktopIpcClient) {
-      await desktopIpcClient.startTurn(threadId, {
-        input: [
-          {
-            type: "text",
-            text
-          }
-        ],
-        attachments: []
-      });
-      return;
+      const completedTurns = new Set<string>();
+      this.completedDuringWriteBackStarts.set(threadId, completedTurns);
+      try {
+        const result = await desktopIpcClient.startTurn(threadId, {
+          input: [{ type: "text", text }],
+          attachments: []
+        });
+        // The exact returned ID links the original; a pending RPC is not start evidence.
+        const turn = (result as { result?: { turn?: { id?: unknown; status?: unknown } } } | null)?.result?.turn;
+        if (queueId !== undefined && typeof turn?.id === "string" && turn.id.trim()) {
+          this.context.stateStore.bindDiscordMessageInputTurn(queueId, turn.id);
+          const alreadyCompleted = completedTurns.has(turn.id) ||
+            turn.status === "completed" || turn.status === "interrupted" || turn.status === "failed";
+          if (alreadyCompleted) this.context.stateStore.claimDiscordInputThinkingReaction(queueId, false);
+          return { turnId: turn.id, inProgress: turn.status === "inProgress", alreadyCompleted };
+        }
+        return null;
+      } finally {
+        this.completedDuringWriteBackStarts.delete(threadId);
+      }
     }
 
     await this.context.codexAdapter.resumeThread(threadId);
     await this.context.codexAdapter.startTurn(threadId, text);
+    return null;
   }
 
   private async isBridgeRemoteCliThread(threadId: string): Promise<boolean> {

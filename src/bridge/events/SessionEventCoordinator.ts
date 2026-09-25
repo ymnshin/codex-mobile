@@ -41,6 +41,7 @@ const NATIVE_SHELL_PLACEHOLDER_MAX_AGE_MS = 2 * 60 * 1000;
 const LIVE_SUBAGENT_SPAWN_EAGER_ATTACH_GRACE_MS = 5_000;
 
 interface SessionEventCoordinatorDependencies {
+  finishDiscordInputTurn(threadId: string, turnId: string): Promise<void>;
   appendCanonicalEvent(input: {
     threadId: string;
     source: "session" | "desktop-ipc";
@@ -374,6 +375,7 @@ export class SessionEventCoordinator {
   }
 
   async handleSessionEvent(event: CodexSessionEvent): Promise<void> {
+    if ("threadId" in event && event.threadId && this.runtime.unseededNoHistoryThreads.has(event.threadId)) return;
     if (event.type === "shellApprovalRequested") {
       await this.handleLocalShellApprovalRequested(event);
       return;
@@ -979,7 +981,7 @@ export class SessionEventCoordinator {
     }
     if (!this.deps.shouldMirrorLiveCursor(event.threadId, cursor)) {
       if (envelope?.kind === "turnAborted") {
-        await this.completeSessionTurn(state, "aborted");
+        await this.completeSessionTurn(state, "aborted", event.turnId);
       }
       return;
     }
@@ -1009,7 +1011,7 @@ export class SessionEventCoordinator {
           event
         )
       );
-      await this.completeSessionTurn(state, "aborted");
+      await this.completeSessionTurn(state, "aborted", event.turnId);
     } else {
       await this.deps.publishCompletedUserMessage(
         event.threadId,
@@ -1093,7 +1095,7 @@ export class SessionEventCoordinator {
     });
     if (!this.deps.shouldMirrorLiveCursor(event.threadId, cursor)) {
       if (kind === "agentAnswer") {
-        await this.completeSessionTurn(state, "completed");
+        await this.completeSessionTurn(state, "completed", event.turnId);
       }
       return;
     }
@@ -1167,12 +1169,13 @@ export class SessionEventCoordinator {
       await this.deps.enforceTurnRetention(event.threadId);
     }
     if (kind === "agentAnswer") {
-      await this.completeSessionTurn(state, "completed");
+      await this.completeSessionTurn(state, "completed", event.turnId);
     }
   }
 
-  private async completeSessionTurn(state: ThreadRuntimeState, status: string): Promise<void> {
+  private async completeSessionTurn(state: ThreadRuntimeState, status: string, exactTurnId: string | null): Promise<void> {
     markThreadTurnCompleted(state, status);
+    if (exactTurnId) await this.deps.finishDiscordInputTurn(state.threadId, exactTurnId);
     this.deps.persistThreadState(state);
     this.deps.queueStatusUpdate(state.threadId);
     await this.deps.drainWriteBackQueue(state.threadId);

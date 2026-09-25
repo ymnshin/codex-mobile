@@ -41,7 +41,7 @@ Use this exact checklist when explaining or guiding setup:
 
 Prefer this sequence:
 
-1. Read the README sections:
+1. Read the fork's `README.md`, then these sections of `README.en.md`:
    - `Prerequisites`
    - `Quick Guide`
    - `Detailed Guide`
@@ -59,7 +59,7 @@ Prefer this sequence:
    - Ask for the application ID, then save it into `.env`.
    - Ask the user to confirm the Bot page exists.
    - Ask the user to configure server install scopes and permissions.
-   - Ask for the bot token and save it into `.env`. Tell the user they may also add `DISCORD_BOT_TOKEN` directly to `.env` themselves if they prefer not to paste the token into Codex.
+   - Ask the user to enter the bot token directly into the local `.env` file or the optional `node scripts/token-entry.mjs` loopback page. Never request the token in Codex/Discord chat or print it.
    - Generate or show the invite URL, ask the user to authorize the bot, then verify bot permissions.
    - Ask for the controller user ID and save it into `.env`.
    - Ask the user to choose the behavior preset, defaulting to `recommended`, then write `bridge.config.json`.
@@ -69,7 +69,7 @@ Prefer this sequence:
 8. If diagnostics pass, do not start the bridge automatically. Tell the user to start it themselves with:
    - `npm start`
 9. When the user uses Codex Desktop, recommend adding this project to the app, opening a chat for this project, and running `npm start` there while they work in other Codex projects.
-10. After the bridge has stopped, recommend `/codex cleanall` from Discord or `npm run clean` locally when the user wants to remove bridge-managed Discord channels/threads and local state.
+10. Explain that stopping does not require cleaning. Only when the user explicitly wants deletion, use `/codex cleanall` while connected or stop the bridge and run `npm run clean` locally. These delete bridge-managed history/channels/state; do not recommend them for history-preserving operation.
 11. After the user starts the bridge, verify with one or more of:
 
 - `npm run inspect`
@@ -90,7 +90,9 @@ When Codex runs `npm run doctor` from a restricted environment:
 - Approvals work for Desktop and for Windows Codex CLI sessions launched through the standard `codex` command while the bridge is running.
 - The primary product surface is live mirroring plus exact approval handling in Discord, with narrow `/codex send` write-back for the configured controller user in mapped channels.
 - Discord can route Plan Mode accept/feedback actions and tool-input answers only through the bridge's explicit controls.
-- Ambient Discord chat messages are not Codex input, role IDs do not grant control, and unmapped Discord locations must reject write-back.
+- Ambient Discord chat messages are not Codex input by default. The local optional `messageWriteBacks.plainTextChannelIds` mode accepts only the sole controller's new text in explicitly allowed guild text channels whose mapped tasks are allowlisted. It reuses the queue and persistent source-message dedupe; no history/edits/attachments/other senders. Enable the Message Content Intent in Discord first; never silently enable it. Role IDs do not grant control, and unmapped Discord locations must reject write-back.
+- Plain-text status reactions are best-effort and source-linked: 📨 means durable acceptance; 🤔 requires the exact confirmed in-progress turn and is removed only on that turn's completion. Never mark mere dispatch attempts as running, replay historical reactions, remove other users' reactions, or let reaction API errors fail a Codex input.
+- Presets keep only the latest two mirrored turns by default. If the user wants conversation history retained, use `retention.maxTurnsPerThread: 0` and restart the bridge. This disables automatic turn pruning, not explicit clean commands or temporary card lifecycles. Preserve their startup-backfill choice; never replay deleted history without authorization.
 
 ## Useful Operational Commands
 

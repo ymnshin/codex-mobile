@@ -514,6 +514,13 @@ export class MirrorPublisher {
     if (!bridge || !sanitized) {
       return;
     }
+    if (turnId && this.context.stateStore.claimDiscordMessageEcho(threadId, turnId, text, itemId)) {
+      this.deps.ensureMirrorStateHydrated(threadId);
+      this.runtime.liveAgentMessages.delete(threadId);
+      this.closeGroupedMessages(threadId);
+      this.deps.markUserTurnMirrored(threadId, itemId, turnId, turnCursor, sanitized);
+      return;
+    }
     if (this.isStartupMirrorBatchActive(threadId)) {
       await this.flushStartupMirrorBatch(threadId);
     }

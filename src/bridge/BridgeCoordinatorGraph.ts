@@ -212,6 +212,7 @@ export function createBridgeCoordinatorGraph(
       mirrorStateCoordinator.updateStateLastActivityAt(state, timestampMs)
   });
   sessionEventCoordinator = new SessionEventCoordinator(runtimeContext, runtime, {
+    finishDiscordInputTurn: (threadId, turnId) => providerCommandCoordinator.finishDiscordInputTurn(threadId, turnId),
     appendCanonicalEvent: (input) => canonicalLedgerCoordinator.appendCanonicalEvent(input),
     buildApprovalCardView: (approval) => approvalCoordinator.buildApprovalCardView(approval),
     buildMirrorCursor: (timestampMs, itemId, orderKey) =>
@@ -288,6 +289,7 @@ export function createBridgeCoordinatorGraph(
       mirrorStateCoordinator.updateStateLastActivityAt(state, timestampMs)
   });
   notificationRouter = new NotificationRouter(runtimeContext, runtime, {
+    finishDiscordInputTurn: (threadId, turnId) => providerCommandCoordinator.finishDiscordInputTurn(threadId, turnId),
     appendCanonicalEvent: (input) => canonicalLedgerCoordinator.appendCanonicalEvent(input),
     buildApprovalCardView: (approval) => approvalCoordinator.buildApprovalCardView(approval),
     clearDeferredApprovalRequest: (requestId) => approvalCoordinator.clearDeferredApprovalRequest(requestId),
@@ -437,8 +439,8 @@ export function createBridgeCoordinatorGraph(
       ),
     resolveThreadMetadata: (threadId, preferred, options) =>
       threadHydrator.resolveThreadMetadata(threadId, preferred, options),
-    seedMirrorCursorFromStableFrontier: (threadId) =>
-      mirrorSyncCoordinator.seedMirrorCursorFromStableFrontier(threadId),
+    seedMirrorCursorFromStableFrontier: (threadId, includeActiveTurn) =>
+      mirrorSyncCoordinator.seedMirrorCursorFromStableFrontier(threadId, includeActiveTurn),
     shouldPreferSessionStreamForThread: (threadId) => mirrorCandidateExtractor.shouldPreferSessionStreamForThread(threadId),
     tryReadThread: (threadId) => mirrorStateCoordinator.tryReadThread(threadId)
   });

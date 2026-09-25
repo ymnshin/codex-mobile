@@ -209,6 +209,14 @@ export class StateStore {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS discord_message_inputs (
+        message_id TEXT PRIMARY KEY,
+        queue_id INTEGER NOT NULL UNIQUE,
+        turn_id TEXT,
+        echo_item_id TEXT,
+        thinking_reaction_state TEXT
+      );
+
       CREATE TABLE IF NOT EXISTS proposed_plan_actions (
         token TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL,
@@ -224,6 +232,11 @@ export class StateStore {
         error TEXT
       );
     `);
+
+    const inputColumns = this.database.pragma("table_info(discord_message_inputs)") as Array<{ name: string }>;
+    if (!inputColumns.some((column) => column.name === "thinking_reaction_state")) {
+      this.database.exec("ALTER TABLE discord_message_inputs ADD COLUMN thinking_reaction_state TEXT");
+    }
 
     this.database.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_project_bridges_category_id ON project_bridges(discord_category_id);
@@ -1106,6 +1119,7 @@ export class StateStore {
     this.database.pragma("foreign_keys = OFF");
     try {
       this.database.exec(`
+        DROP TABLE IF EXISTS discord_message_inputs;
         DROP TABLE IF EXISTS write_back_queue;
         DROP TABLE IF EXISTS canonical_thread_events;
         DROP TABLE IF EXISTS child_thread_anchors;
@@ -1175,6 +1189,82 @@ export class StateStore {
       throw new Error(`Failed to create write-back queue item ${id}.`);
     }
     return record;
+  }
+
+  createDiscordMessageQueueItemOnce(messageId: string, input: {
+    threadId: string;
+    discordChannelId: string;
+    actorUserId: string;
+    text: string;
+  }): WriteBackQueueRecord | null {
+    return this.database.transaction(() => {
+      if (this.hasDiscordMessageInput(messageId)) {
+        return null;
+      }
+      const record = this.createWriteBackQueueItem(input);
+      this.database.prepare("INSERT INTO discord_message_inputs (message_id, queue_id) VALUES (?, ?)")
+        .run(messageId, record.id);
+      return record;
+    })();
+  }
+
+  hasDiscordMessageInput(messageId: string): boolean {
+    return Boolean(this.database.prepare("SELECT 1 FROM discord_message_inputs WHERE message_id = ?").get(messageId));
+  }
+
+  getDiscordMessageIdForQueueItem(queueId: number): string | null {
+    const row = this.database.prepare("SELECT message_id FROM discord_message_inputs WHERE queue_id = ?")
+      .get(queueId) as { message_id: string } | undefined;
+    return row?.message_id ?? null;
+  }
+
+  bindDiscordMessageInputTurn(queueId: number, turnId: string): void {
+    this.database.prepare("UPDATE discord_message_inputs SET turn_id = ? WHERE queue_id = ? AND turn_id IS NULL")
+      .run(turnId, queueId);
+  }
+
+  claimDiscordInputThinkingReaction(queueId: number, present: boolean): boolean {
+    if (!present) {
+      return this.database.transaction(() => {
+        const source = this.database.prepare(`
+          SELECT thinking_reaction_state FROM discord_message_inputs WHERE queue_id = ? AND turn_id IS NOT NULL
+        `).get(queueId) as { thinking_reaction_state: string | null } | undefined;
+        if (!source || source.thinking_reaction_state === "finished") return false;
+        this.database.prepare("UPDATE discord_message_inputs SET thinking_reaction_state = 'finished' WHERE queue_id = ?")
+          .run(queueId);
+        return source.thinking_reaction_state === "started";
+      })();
+    }
+    const result = this.database.prepare(`
+      UPDATE discord_message_inputs SET thinking_reaction_state = 'started'
+      WHERE queue_id = ? AND turn_id IS NOT NULL
+        AND thinking_reaction_state IS NULL
+    `).run(queueId);
+    return result.changes > 0;
+  }
+
+  listDiscordMessageQueueItemsForTurn(threadId: string, turnId: string): WriteBackQueueRecord[] {
+    return this.selectMany(`
+      SELECT queue.* FROM discord_message_inputs AS source
+      JOIN write_back_queue AS queue ON queue.id = source.queue_id
+      WHERE queue.codex_thread_id = ? AND source.turn_id = ?
+    `, [threadId, turnId], (row) => this.mapWriteBackQueueRecord(row));
+  }
+
+  claimDiscordMessageEcho(threadId: string, turnId: string, text: string, itemId: string): boolean {
+    return this.database.transaction(() => {
+      const source = this.database.prepare(`
+        SELECT source.message_id, source.echo_item_id FROM discord_message_inputs AS source
+        JOIN write_back_queue AS queue ON queue.id = source.queue_id
+        WHERE queue.codex_thread_id = ? AND source.turn_id = ? AND queue.text = ?
+        LIMIT 1
+      `).get(threadId, turnId, text.trim()) as { message_id: string; echo_item_id: string | null } | undefined;
+      if (!source) return false;
+      if (source.echo_item_id !== null) return source.echo_item_id === itemId;
+      this.database.prepare("UPDATE discord_message_inputs SET echo_item_id = ? WHERE message_id = ?")
+        .run(itemId, source.message_id);
+      return true;
+    })();
   }
 
   getWriteBackQueueItem(id: number): WriteBackQueueRecord | undefined {

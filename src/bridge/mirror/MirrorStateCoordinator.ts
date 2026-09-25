@@ -222,6 +222,8 @@ export class MirrorStateCoordinator {
     this.runtime.hydratedMirrorStateThreadIds.delete(threadId);
     this.runtime.liveAgentMessages.delete(threadId);
     this.runtime.latestMirroredCursorByThread.delete(threadId);
+    this.runtime.startupMirrorFloorByThread.delete(threadId);
+    this.runtime.unseededNoHistoryThreads.delete(threadId);
     this.runtime.latestMirroredTurnCursorByThread.delete(threadId);
     this.runtime.latestMirroredTimestampMsByThread.delete(threadId);
     this.runtime.latestSourceFrontierByThread.delete(threadId);
@@ -421,6 +423,7 @@ export class MirrorStateCoordinator {
   }
 
   shouldMirrorCandidate(threadId: string, cursor: string | null): boolean {
+    if (this.runtime.unseededNoHistoryThreads.has(threadId)) return false;
     const latest = this.runtime.latestMirroredCursorByThread.get(threadId);
     if (!latest) {
       return true;
@@ -432,6 +435,7 @@ export class MirrorStateCoordinator {
   }
 
   shouldMirrorLiveCursor(threadId: string, cursor: string | null): boolean {
+    if (this.runtime.unseededNoHistoryThreads.has(threadId)) return false;
     const latest = this.runtime.latestMirroredCursorByThread.get(threadId);
     if (!latest) {
       return true;
@@ -443,6 +447,7 @@ export class MirrorStateCoordinator {
   }
 
   shouldMirrorTurnCandidate(threadId: string, turnCursor: string | null): boolean {
+    if (this.runtime.unseededNoHistoryThreads.has(threadId)) return false;
     const latest = this.runtime.latestMirroredTurnCursorByThread.get(threadId);
     if (!latest) {
       return true;
@@ -454,6 +459,11 @@ export class MirrorStateCoordinator {
   }
 
   allowLateSameTurnCandidate(threadId: string, candidate: MirrorCandidate): boolean {
+    if (this.runtime.unseededNoHistoryThreads.has(threadId)) return false;
+    const startupFloor = this.runtime.startupMirrorFloorByThread.get(threadId);
+    if (startupFloor && (!candidate.cursor || this.compareItemCursor(candidate.cursor, startupFloor) <= 0)) {
+      return false;
+    }
     const latestTurnCursor = this.runtime.latestMirroredTurnCursorByThread.get(threadId);
     if (!latestTurnCursor || !candidate.turnCursor || candidate.turnCursor !== latestTurnCursor) {
       return false;
@@ -544,6 +554,7 @@ export class MirrorStateCoordinator {
 
   async enforceTurnRetention(threadId: string): Promise<void> {
     const maxTurnsPerThread = this.context.runtimeConfig.retention.maxTurnsPerThread;
+    // Zero explicitly preserves mirrored history. Explicit cleanup and card lifecycles are separate.
     if (!Number.isFinite(maxTurnsPerThread) || maxTurnsPerThread < 1) {
       return;
     }

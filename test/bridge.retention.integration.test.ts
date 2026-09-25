@@ -2,8 +2,100 @@ import {
   test,
   assert,
   createBridgeConfigFromPreset,
-  createBridgeTestRig
+  createBridgeTestRig,
+  createBridgeService,
+  FakeCodexAdapter,
+  FakeDiscordAdapter,
+  StateStore,
+  path
 } from "./helpers/bridgeIntegration.js";
+import { CanonicalLedgerCoordinator } from "../src/bridge/canonical/CanonicalLedgerCoordinator.js";
+import { BridgeRuntimeState } from "../src/bridge/runtime/BridgeRuntimeState.js";
+
+test("zero retention keeps the session canonical index on reopen while a positive limit still prunes", () => {
+  for (const limit of [0, 2]) {
+    const runtimeConfig = createBridgeConfigFromPreset("recommended", { allowedUserIds: ["user_1"] }, {
+      retention: { maxTurnsPerThread: limit }
+    });
+    const { store, dir } = createBridgeTestRig({ runtimeConfig });
+    const openLedger = (stateStore: StateStore) => new CanonicalLedgerCoordinator(
+      { stateStore, runtimeConfig } as never, new BridgeRuntimeState(true)
+    );
+    const remember = (ledger: CanonicalLedgerCoordinator, number: number) => ledger.rememberRetainedTurn({
+      threadId: "session_retention", turnId: `turn-${number}`, turnCursor: null,
+      anchorItemId: `user-${number}`, anchorText: `question ${number}`, source: "session"
+    });
+    try {
+      const ledger = openLedger(store);
+      for (let number = 1; number <= 4; number += 1) remember(ledger, number);
+      assert.equal(ledger.listRetainedTurns("session_retention").length, limit || 4);
+    } finally { store.close(); }
+    const reopened = new StateStore(path.join(dir, "bridge.sqlite"));
+    try {
+      const ledger = openLedger(reopened);
+      remember(ledger, 5);
+      assert.equal(ledger.listRetainedTurns("session_retention").length, limit || 5);
+      assert.equal(reopened.listRetainedTurns("session_retention").length, limit || 5);
+    } finally { reopened.close(); }
+  }
+});
+
+test("zero retention preserves user and final message IDs and turn indexes across new turns and a store reopen", async () => {
+  const threadId = "unlimited_retention_thread";
+  const runtimeConfig = createBridgeConfigFromPreset("recommended", { allowedUserIds: ["user_1"] }, {
+    retention: { maxTurnsPerThread: 0 },
+    startupBackfill: { maxCodexMessages: 0 }
+  });
+  const first = createBridgeTestRig({ runtimeConfig });
+  first.store.upsertThreadBridge({
+    codexThreadId: threadId, parentCodexThreadId: null,
+    projectKey: "c:\\repo", projectName: "repo", discordChannelId: "discord_unlimited",
+    discordParentChannelId: null, statusMessageId: null, cwd: "C:\\repo", repoName: "repo",
+    lastSeenAt: new Date().toISOString(), attachMode: "auto", threadName: "Unlimited",
+    lastStatusType: "active", channelKind: "conversation"
+  });
+  const emitTurn = async (codex: FakeCodexAdapter, number: number) => {
+    const turnId = `turn-${String(number).padStart(3, "0")}`;
+    for (const item of [
+      { id: `item-${number * 1000 + 1}`, type: "userMessage", content: [{ text: `question ${number}` }] },
+      { id: `item-${number * 1000 + 2}`, type: "message", role: "assistant", phase: "final_answer",
+        content: [{ text: `answer ${number}` }] }
+    ]) {
+      codex.emit("notification", { method: "item/completed", params: { threadId, turnId, item } });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
+  let originalMessageIds: string[] = [];
+  try {
+    await first.bridge.start({ skipDiscovery: true });
+    for (let number = 1; number <= 24; number += 1) await emitTurn(first.codex, number);
+    await first.bridge.enforceTurnRetention(threadId);
+    const records = first.store.listMirroredItems(threadId);
+    assert.equal(records.filter((record) => record.kind === "user").length, 24);
+    assert.equal(records.filter((record) => record.kind === "agentAnswer").length, 24);
+    assert.equal(first.store.listRetainedTurns(threadId).length, 24);
+    originalMessageIds = records.flatMap((record) => record.discordMessageIds ?? [record.discordMessageId]);
+    assert.deepEqual(first.discord.deletedMessageIds, []);
+  } finally { await first.bridge.stop(); }
+
+  const store = new StateStore(path.join(first.dir, "bridge.sqlite"));
+  const codex = new FakeCodexAdapter();
+  const discord = new FakeDiscordAdapter();
+  const bridge = createBridgeService({ runtimeConfig, stateStore: store, codexAdapter: codex, provider: discord });
+  try {
+    await bridge.start({ skipDiscovery: true });
+    assert.equal(discord.sentTextMessages.length, 0, "restart must not repost the retained history");
+    for (let number = 25; number <= 27; number += 1) await emitTurn(codex, number);
+    await bridge.enforceTurnRetention(threadId);
+    const records = store.listMirroredItems(threadId);
+    assert.equal(records.filter((record) => record.kind === "user").length, 27);
+    assert.equal(records.filter((record) => record.kind === "agentAnswer").length, 27);
+    assert.equal(store.listRetainedTurns(threadId).length, 27);
+    const remaining = new Set(records.flatMap((record) => record.discordMessageIds ?? [record.discordMessageId]));
+    assert(originalMessageIds.every((messageId) => remaining.has(messageId)));
+    assert.deepEqual(discord.deletedMessageIds, []);
+  } finally { await bridge.stop(); }
+});
 
 test("retention maxTurnsPerThread prunes mirrored messages from older turns", async () => {
   const { store, codex, discord, bridge } = createBridgeTestRig({

@@ -24,7 +24,11 @@
   // Covers `/codex send` starting a new turn, queueing while busy, "Steer instead",
   // `/codex send mode:steer`, and queued-message retraction.
   "messageWriteBacks": {
-    "allowFromDiscord": true
+    "allowFromDiscord": true,
+    // Optional plain-text input, OFF by default. Use only explicitly allowed mapped
+    // guild text channels, and also set discovery.allowedThreadIds below.
+    // Enable Message Content Intent in the Developer Portal before adding real IDs.
+    "plainTextChannelIds": []
   },
 
   // Mirror surfaces. Toggle these individually if the preset is too quiet or too noisy.
@@ -36,7 +40,8 @@
     "fileEdits": false
   },
 
-  // Startup backfill only applies to brand-new Discord channels.
+  // Set 0 to skip historical import when attaching/refreshing channels and follow live events only.
+  // This is separate from retention: 0 here does not delete already mirrored messages.
   "startupBackfill": {
     "maxCodexMessages": 20
     // Advanced-only: keep some context from both the start and end of a long startup-backfilled turn.
@@ -46,9 +51,18 @@
     // "trailingEventBudget": 10
   },
 
-  // Keep only the latest N turns mirrored in each Discord channel.
+  // Keep only the latest N turns mirrored in each Discord channel (1-20).
+  // Use 0 to keep existing/future mirrored history without automatic turn pruning.
+  // This does not enable startup backfill or disable explicit clean commands/card expiry.
   "retention": {
     "maxTurnsPerThread": 2
+  },
+
+  // Empty means the preset's automatic discovery scope; for a private conversation
+  // replace with your explicit Codex thread IDs before starting.
+  // Plain-text write-back requires its mapped task to be explicitly present here.
+  "discovery": {
+    "allowedThreadIds": []
   },
 
   // UI and retention controls.

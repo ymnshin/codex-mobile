@@ -30,7 +30,8 @@ export interface BridgeProviderHandlers {
     actor: ProviderActorContext,
     channelId: string,
     text: string,
-    mode: "queue" | "steer"
+    mode: "queue" | "steer",
+    sourceDiscordMessageId?: string
   ): Promise<DiscordCommandResult>;
   onRetractCommand(actor: ProviderActorContext, channelId: string): Promise<DiscordCommandResult>;
   onWriteBackButton(
@@ -86,6 +87,12 @@ export interface BridgeProvider {
     options?: BridgeProviderStartOptions
   ): Promise<void>;
   stop(): Promise<void>;
+  setInputReaction?(
+    channelId: string,
+    messageId: string,
+    reaction: "📨" | "🤔",
+    present: boolean
+  ): Promise<void>;
   ensureProjectCategory(
     projectKey: string,
     projectName: string,

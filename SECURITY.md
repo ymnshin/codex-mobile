@@ -22,7 +22,7 @@ The main risks are:
 
 - approvals are limited to **exact surfaced requests**
 - no arbitrary command execution path is exposed through Discord
-- Discord write-back is limited to explicit slash commands in mapped bridge channels
+- Discord write-back is limited to explicit slash commands in mapped bridge channels, or explicitly enabled controller/channel/task-scoped plain-text input
 - server-side authorization is enforced by the local bridge
 - stale or resolved approval cards become non-actionable
 - mirrored content is redacted and truncated by default
@@ -60,7 +60,7 @@ Recommended for public beta users:
 - Discord is not an end-to-end encrypted channel for this workflow
 - some Codex approval surfaces are better supported than others
 - the bridge does not yet support fine-grained per-channel or per-thread approval policies
-- ambient Discord chat messages are ignored and never treated as Codex input
+- ambient Discord chat is ignored by default; optional plain-text input requires an explicit channel allowlist and accepts only the sole controller in mapped, allowlisted tasks
 - write-back is not accepted from unmapped Discord channels or users other than the configured controller
 
 ## Reporting a vulnerability

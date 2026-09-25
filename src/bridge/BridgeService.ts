@@ -174,8 +174,8 @@ export class BridgeService {
     this.coordinators.mirrorStateCoordinator.printProgress(`Starting ${providerLabel}...`);
     await this.options.provider.start({
       onStatusCommand: async (actor) => this.coordinators.providerCommandCoordinator.handleStatusCommand(actor),
-      onSendCommand: async (actor, channelId, text, mode) =>
-        this.coordinators.providerCommandCoordinator.handleSendCommand(actor, channelId, text, mode),
+      onSendCommand: async (actor, channelId, text, mode, sourceDiscordMessageId) =>
+        this.coordinators.providerCommandCoordinator.handleSendCommand(actor, channelId, text, mode, sourceDiscordMessageId),
       onRetractCommand: async (actor, channelId) =>
         this.coordinators.providerCommandCoordinator.handleRetractCommand(actor, channelId),
       onWriteBackButton: async (actor, action, queueItemId) =>

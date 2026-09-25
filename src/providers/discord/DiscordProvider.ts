@@ -31,6 +31,7 @@ import type {
   StatusCardView
 } from "../../domain.js";
 import type { Logger } from "../../logger.js";
+import type { BridgeMessageWriteBackConfig } from "../../config.js";
 import type {
   BridgeProvider,
   BridgeProviderHandlers,
@@ -179,15 +180,25 @@ export interface DiscordInspectionSnapshot {
 }
 
 export class DiscordProvider implements BridgeProvider {
-  private readonly client = new Client({
-    intents: [GatewayIntentBits.Guilds]
-  });
+  private readonly client: Client;
+  private readonly reactionRest: REST;
+  private readonly inputReactionUpdates = new Map<string, Promise<void>>();
   private readonly interactionListener = async (interaction: Interaction) => {
     await this.handleInteraction(interaction);
   };
 
   private handlers: BridgeProviderHandlers | null = null;
   private interactionListenerAttached = false;
+  private messageListenerAttached = false;
+  private messageListeningSince = 0;
+  private readonly messageListener = async (message: Message) => {
+    try {
+      await this.handlePlainTextMessage(message);
+    } catch {
+      // Message bodies and arbitrary transport errors must not enter logs.
+      this.logger.warn({ messageId: message.id }, "Discord plain-text message handling failed.");
+    }
+  };
   private readonly startupSessions = new WeakMap<StartupTransportContext, DiscordStartupSession>();
 
   constructor(
@@ -195,9 +206,20 @@ export class DiscordProvider implements BridgeProvider {
       token: string;
       applicationId: string;
       guildId: string;
+      messageWriteBacks?: BridgeMessageWriteBackConfig;
     },
     private readonly logger: Logger
-  ) {}
+  ) {
+    this.reactionRest = new REST({ version: "10", retries: 0, timeout: 2_000,
+      rejectOnRateLimit: () => true }).setToken(config.token);
+    const plainTextEnabled = config.messageWriteBacks?.allowFromDiscord &&
+      (config.messageWriteBacks.plainTextChannelIds?.length ?? 0) > 0;
+    this.client = new Client({
+      intents: [GatewayIntentBits.Guilds, ...(plainTextEnabled
+        ? [GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+        : [])]
+    });
+  }
 
   async start(handlers: BridgeProviderHandlers, options: BridgeProviderStartOptions = {}): Promise<void> {
     this.handlers = handlers;
@@ -205,6 +227,13 @@ export class DiscordProvider implements BridgeProvider {
     if (options.listenForInteractions !== false && !this.interactionListenerAttached) {
       this.client.on("interactionCreate", this.interactionListener);
       this.interactionListenerAttached = true;
+    }
+    if (options.listenForInteractions !== false && !this.messageListenerAttached &&
+        this.config.messageWriteBacks?.allowFromDiscord &&
+        (this.config.messageWriteBacks.plainTextChannelIds?.length ?? 0) > 0) {
+      this.messageListeningSince = Date.now();
+      this.client.on("messageCreate", this.messageListener);
+      this.messageListenerAttached = true;
     }
 
     await this.client.login(this.config.token);
@@ -214,11 +243,36 @@ export class DiscordProvider implements BridgeProvider {
   }
 
   async stop(): Promise<void> {
+    if (this.messageListenerAttached) {
+      this.client.off("messageCreate", this.messageListener);
+      this.messageListenerAttached = false;
+    }
     if (this.interactionListenerAttached) {
       this.client.off("interactionCreate", this.interactionListener);
       this.interactionListenerAttached = false;
     }
     await this.client.destroy();
+  }
+
+  async setInputReaction(channelId: string, messageId: string, reaction: "📨" | "🤔", present: boolean): Promise<void> {
+    if (!this.config.messageWriteBacks?.allowFromDiscord ||
+        !this.config.messageWriteBacks.plainTextChannelIds?.includes(channelId)) return;
+    // Keep add/remove ordering for this original even if completion races the start response.
+    const key = `${channelId}:${messageId}`;
+    const previous = this.inputReactionUpdates.get(key) ?? Promise.resolve();
+    const update = previous.then(async () => {
+      try {
+        const route = Routes.channelMessageOwnReaction(channelId, messageId, encodeURIComponent(reaction));
+        const options = { signal: AbortSignal.timeout(2_000) };
+        if (present) await this.reactionRest.put(route, options);
+        else await this.reactionRest.delete(route, options);
+      } catch {
+        this.logger.warn({ channelId, messageId, reaction, present }, "Discord input reaction unavailable; input processing continues.");
+      }
+    });
+    this.inputReactionUpdates.set(key, update);
+    try { await update; }
+    finally { if (this.inputReactionUpdates.get(key) === update) this.inputReactionUpdates.delete(key); }
   }
 
   async inspectBridgeManagedLocations(limit = 25): Promise<DiscordInspectionSnapshot> {
@@ -925,6 +979,39 @@ export class DiscordProvider implements BridgeProvider {
         throw responseError;
       }
     }
+  }
+
+  private async handlePlainTextMessage(message: Message): Promise<void> {
+    const config = this.config.messageWriteBacks;
+    if (!config?.allowFromDiscord || !config.plainTextChannelIds?.includes(message.channelId) ||
+        !message.inGuild() || message.guildId !== this.config.guildId ||
+        message.channel.type !== ChannelType.GuildText || message.author.bot || message.webhookId ||
+        message.system || message.partial ||
+        (message.type !== MessageType.Default && message.type !== MessageType.Reply) ||
+        message.editedTimestamp !== null || message.createdTimestamp < this.messageListeningSince ||
+        !config.allowedUserIds.includes(message.author.id)) {
+      return;
+    }
+    if (message.attachments.size > 0 || message.stickers.size > 0) {
+      await message.reply({
+        content: "現在は文字だけの指示に対応しています。添付やスタンプを外して送信してください。",
+        allowedMentions: { parse: [], repliedUser: false }
+      });
+      return;
+    }
+    if (!message.content.trim()) return;
+    const result = await this.requireHandlers().onSendCommand(
+      { userId: message.author.id, roleIds: [], username: message.author.username },
+      message.channelId, message.content, "queue", message.id
+    );
+    // The original Discord post already shows the input. Do not quote it again.
+    if (!result.content || result.content.startsWith("Started a new Codex turn.")) return;
+    await message.reply({
+      content: result.content.startsWith("Queued for the next turn.")
+        ? "次のターンに追加しました。"
+        : result.content.split("\n>")[0]!,
+      allowedMentions: { parse: [], repliedUser: false }
+    });
   }
 
   private async handleChatCommand(interaction: ChatInputCommandInteraction): Promise<void> {

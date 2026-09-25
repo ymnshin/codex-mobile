@@ -106,12 +106,64 @@ test("CodexDesktopIpcClient startTurn targets the cached owner client id", async
   assert.equal(calls[0]?.method, "thread-follower-start-turn");
   assert.deepEqual(calls[0]?.params, {
     conversationId: "thread_start_target",
-    turnStartParams: {
-      input: [{ type: "text", text: "Start from Discord." }],
-      attachments: []
+    turnStart: {
+      request: {
+        threadId: "thread_start_target",
+        input: [{ type: "text", text: "Start from Discord." }]
+      },
+      context: { attachments: [] }
     }
   });
   assert.deepEqual(calls[0]?.overrides, { timeoutMs: 30_000, targetClientId: "desktop-client" });
+});
+
+test("CodexDesktopIpcClient startTurn uses the Desktop v2 wire envelope without changing steer v1", async () => {
+  const { client } = createClientHarness();
+  const frames: Array<Record<string, unknown>> = [];
+  const internalClient = client as unknown as {
+    writeFrame: (frame: Record<string, unknown>) => void;
+    handleFrame: (frame: Record<string, unknown>) => void;
+  };
+  internalClient.writeFrame = (frame) => {
+    frames.push(frame);
+    internalClient.handleFrame({
+      type: "response", requestId: frame.requestId, resultType: "success", result: { ok: true }
+    });
+  };
+
+  await client.startTurn("thread_v2", { input: [{ type: "text", text: "New instruction." }] });
+  await client.steerTurn("thread_v2", "turn_active", [{ type: "text", text: "Clarification." }]);
+
+  assert.equal(frames.length, 2);
+  assert.equal(frames[0]?.version, 2);
+  assert.deepEqual(frames[0]?.params, {
+    conversationId: "thread_v2",
+    turnStart: {
+      request: { threadId: "thread_v2", input: [{ type: "text", text: "New instruction." }] },
+      context: { attachments: [] }
+    }
+  });
+  assert.equal(frames[1]?.version, 1);
+  assert.equal(frames[1]?.method, "thread-follower-steer-turn");
+});
+
+test("CodexDesktopIpcClient does not retry a rejected v2 start with a legacy or app-server route", async () => {
+  const { client } = createClientHarness();
+  const frames: Array<Record<string, unknown>> = [];
+  const internalClient = client as unknown as {
+    writeFrame: (frame: Record<string, unknown>) => void;
+    handleFrame: (frame: Record<string, unknown>) => void;
+  };
+  internalClient.writeFrame = (frame) => {
+    frames.push(frame);
+    internalClient.handleFrame({
+      type: "response", requestId: frame.requestId, resultType: "error", error: "no-client-found"
+    });
+  };
+
+  await assert.rejects(client.startTurn("thread_v2", { input: [] }), /no-client-found/);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0]?.version, 2);
 });
 
 test("CodexDesktopIpcClient steerTurn surfaces Desktop IPC timeouts even if a confirmation callback is provided", async () => {

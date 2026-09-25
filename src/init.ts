@@ -288,7 +288,10 @@ async function main(): Promise<void> {
     console.log("- run `npm run doctor` any time you change config");
     console.log("- when you are ready, start the bridge yourself with `npm start`");
     console.log("- recommended with Codex Desktop: add this project to the app, open a chat for this project, and run `npm start` there while you work in other Codex projects");
-    console.log("- after the bridge has stopped, use `/codex cleanall` from Discord or run `npm run clean` locally to remove bridge-managed Discord channels/threads and local state");
+    console.log("- stopping does not require cleanup; keep the state if you want conversation history");
+    console.log("- only for explicit deletion: use `/codex cleanall` while connected, or stop the bridge and run `npm run clean` locally");
+    console.log("- presets retain only 2 turns; set retention.maxTurnsPerThread to 0 to keep mirrored history (separate from startupBackfill)");
+    console.log("- optional plain-text input is off by default; see README.md for controller/channel/task allowlists and Message Content Intent");
     console.log("- edit bridge.config.json any time you want to customize the behavior further");
     console.log("- see bridge.config.example.jsonc for a commented explanation of each option");
     console.log("- keep Codex Desktop and the bridge running on this machine when you want Discord mirroring/control");

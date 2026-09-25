@@ -13,6 +13,10 @@
 /node_modules
 /dist
 /data
+/SETUP-LOCAL.md
+/work
+/outputs
+*.log
 *.sqlite
 *.sqlite-*
 npm-debug.log*

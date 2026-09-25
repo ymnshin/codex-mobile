@@ -179,6 +179,8 @@ export interface BridgeRuntimeStateFields {
   groupedFileChangeMessages: Map<string, GroupedDiscordMessageState>;
   commandActivitySummaries: Map<string, CommandActivitySummaryState>;
   latestMirroredCursorByThread: Map<string, string>;
+  startupMirrorFloorByThread: Map<string, string>;
+  unseededNoHistoryThreads: Set<string>;
   latestMirroredTurnCursorByThread: Map<string, string>;
   latestMirroredTimestampMsByThread: Map<string, number>;
   latestSourceFrontierByThread: Map<string, ThreadSourceFrontier>;
@@ -232,6 +234,8 @@ export class BridgeRuntimeState implements BridgeRuntimeStateFields {
   groupedFileChangeMessages = new Map<string, GroupedDiscordMessageState>();
   commandActivitySummaries = new Map<string, CommandActivitySummaryState>();
   latestMirroredCursorByThread = new Map<string, string>();
+  startupMirrorFloorByThread = new Map<string, string>();
+  unseededNoHistoryThreads = new Set<string>();
   latestMirroredTurnCursorByThread = new Map<string, string>();
   latestMirroredTimestampMsByThread = new Map<string, number>();
   latestSourceFrontierByThread = new Map<string, ThreadSourceFrontier>();
@@ -281,6 +285,8 @@ export class BridgeRuntimeState implements BridgeRuntimeStateFields {
     this.groupedFileChangeMessages.clear();
     this.commandActivitySummaries.clear();
     this.latestMirroredCursorByThread.clear();
+    this.startupMirrorFloorByThread.clear();
+    this.unseededNoHistoryThreads.clear();
     this.latestMirroredTurnCursorByThread.clear();
     this.latestMirroredTimestampMsByThread.clear();
     this.latestSourceFrontierByThread.clear();

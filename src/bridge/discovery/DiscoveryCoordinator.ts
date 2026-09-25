@@ -116,7 +116,7 @@ interface DiscoveryCoordinatorDependencies {
       allowFilesystemScan?: boolean;
     }
   ): Promise<ResolvedThreadMetadata>;
-  seedMirrorCursorFromStableFrontier(threadId: string): Promise<boolean>;
+  seedMirrorCursorFromStableFrontier(threadId: string, includeActiveTurn?: boolean): Promise<boolean>;
   shouldPreferSessionStreamForThread(threadId: string): boolean;
   tryReadThread(threadId: string): Promise<CodexThreadSummary | null>;
 }
@@ -525,7 +525,7 @@ export class DiscoveryCoordinator {
         typeof summaryActivityAtSeconds === "number" && Number.isFinite(summaryActivityAtSeconds)
           ? summaryActivityAtSeconds * 1000
           : null;
-      if (activityAtMs !== null && activityAtMs < cutoff) {
+      if (activityAtMs !== null && activityAtMs < cutoff && !this.discoveryAllowedThreadIds()?.has(thread.summary.id)) {
         continue;
       }
 
@@ -584,6 +584,9 @@ export class DiscoveryCoordinator {
     if (this.runtime.isColdStart && isStartup) return true;
 
     const existing = this.context.stateStore.getThreadBridge(thread.id);
+    // Explicitly configured targets may have stale thread/list timestamps while
+    // their live Desktop session continues. Attach them without broad discovery.
+    if (!existing && this.discoveryAllowedThreadIds()?.has(thread.id)) return true;
     const updatedAtMs = (thread.updatedAt ?? thread.createdAt ?? 0) * 1000;
 
     if (thread.status.type === "active") {
@@ -922,7 +925,19 @@ export class DiscoveryCoordinator {
       let startupHistoryDurationMs = 0;
       let replayFrontierDurationMs = 0;
       let resumeDurationMs = 0;
-      if (shouldDeferColdStartHistory) {
+      if (this.context.runtimeConfig.startupBackfill.maxCodexMessages === 0) {
+        // Zero is an explicit opt-out, including user anchors and structural events.
+        // The session frontier above preserves only events arriving during attach.
+        if (preferSessionStream) {
+          if (!startupSessionFrontier && !(await this.deps.fastForwardThread(thread.id))) {
+            this.runtime.unseededNoHistoryThreads.add(thread.id);
+            this.context.logger.warn({ threadId: thread.id }, "Could not establish a live-only session frontier; mirroring remains blocked.");
+          }
+        } else {
+          seededExistingCursor = await this.deps.seedMirrorCursorFromStableFrontier(thread.id, true);
+        }
+        this.printScopedProgress("attach", `Skipped startup history for ${shortThreadId(thread.id)}. Live updates will continue.`);
+      } else if (shouldDeferColdStartHistory) {
         if (preferSessionStream) {
           const replayStartedAt = startupTimingNow();
           const replayedStartupSessionEvents = await this.deps.replayThreadSessionEventsFromFrontier(
@@ -1015,6 +1030,7 @@ export class DiscoveryCoordinator {
       }
       if (
         existing &&
+        !seededExistingCursor &&
         !shouldReinitializeDiscordHistory &&
         !shouldRepairConversationAnchor &&
         repairedExistingHistoryCount === 0 &&

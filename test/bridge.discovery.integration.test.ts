@@ -67,6 +67,30 @@ test("cold start imports recent unique conversations up to the 25-thread cap and
   }
 });
 
+test("explicit thread scope attaches an old notLoaded parent without discovering unlisted threads", async () => {
+  const { store, codex, discord, bridge } = createBridgeTestRig({
+    runtimeConfig: createBridgeConfigFromPreset("recommended", { allowedUserIds: ["user_1"] }, {
+      discovery: { allowedThreadIds: ["explicit_old_parent"] },
+      startupBackfill: { maxCodexMessages: 0 }
+    })
+  });
+  const now = Math.floor(Date.now() / 1000);
+  codex.threads = ["explicit_old_parent", "unlisted_old", "unlisted_recent"].map((id) => ({
+    id, name: id, preview: id, modelProvider: null,
+    createdAt: now - 72 * 60 * 60,
+    updatedAt: id === "unlisted_recent" ? now : now - 72 * 60 * 60,
+    ephemeral: false, status: { type: "notLoaded" as const }
+  }));
+  for (const thread of codex.threads) codex.metadata.set(thread.id, { cwd: "C:\\repo", repoName: "repo" });
+  try {
+    await bridge.start();
+    assert.deepEqual(store.listThreadBridges().map((row) => row.codexThreadId), ["explicit_old_parent"]);
+    assert.equal(discord.statusCardChannelIds.length, 1);
+    assert.equal(discord.sentTextMessages.length, 0);
+    assert.equal(discord.liveTextMessages.length, 0);
+  } finally { await bridge.stop(); }
+});
+
 test("cold start imports notLoaded threads with missing timestamps as fallback candidates", async () => {
   const { store, codex, discord, bridge } = createBridgeTestRig();
 
